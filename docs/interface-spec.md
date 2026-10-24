@@ -13,3 +13,5 @@ v0.1.2 审计器对空/截断文件、非法编码、畸形 CSV、额外或重�
 v0.1.3 汇总新增 `run` 对象，含 `model_version`, `scenario_sha256`, `solver_name`, `status`；详细原始字节指纹规则见 `docs/input-provenance.md`。独立审计器要求此对象并核对给定输入字节。旧汇总缺少该对象时退出 2。 / The summary now binds to the exact scenario bytes and records model, solver, and status metadata. Legacy summaries without `run` fail audit.
 
 v0.1.4 `run` 还要求 `git_commit` 与 `source_state`，完整 `model_version` 带规范化 `core.py` 的 SHA-256。默认审计要求当前模型源码、Git HEAD 和源码状态与汇总匹配；Git 不可用时使用显式 `unavailable` 值。不同提交或提交前后的旧导出需在匹配环境复核或重新生成。 / Audit checks the current model source and Git context; old or incomplete metadata fails explicitly.
+
+v0.1.5 起 `run` 还必须含 `python_version`, `operating_system`, `solver_version`, `dependency_versions`, `dependency_lock_sha256`。当前公开审计命令没有历史参数；旧 schema、不同提交或缺依赖约束文件均退出 2，且不改写导出。历史只读模式尚在[设计](historical-audit-design.md)。 / Current exports require environment fields. The public auditor has no historical option and fails closed without modifying exports.

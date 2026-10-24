@@ -151,6 +151,37 @@ def test_audit_rejects_missing_environment_metadata(exports, field):
     rejected(check(exports), f"missing field {field}")
 
 
+def test_legacy_run_schema_fails_closed_and_is_not_rewritten(exports):
+    path = exports / "summary.json"
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    for field in ("python_version", "operating_system", "solver_version",
+                  "dependency_versions", "dependency_lock_sha256"):
+        summary["run"].pop(field)
+    path.write_text(json.dumps(summary), encoding="utf-8")
+    before = path.read_bytes()
+    rejected(check(exports), "summary.run: missing field python_version")
+    assert path.read_bytes() == before
+
+
+def test_audit_rejects_missing_dependency_lock_file(exports, tmp_path):
+    standalone = tmp_path / "standalone"
+    (standalone / "tools").mkdir(parents=True)
+    (standalone / "src" / "gridwise").mkdir(parents=True)
+    (standalone / "tools" / "audit_exports.py").write_bytes(AUDITOR.read_bytes())
+    (standalone / "src" / "gridwise" / "core.py").write_bytes(
+        (ROOT / "src" / "gridwise" / "core.py").read_bytes())
+    summary_path = exports / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["run"]["git_commit"] = "unavailable"
+    summary["run"]["source_state"] = "unavailable"
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    result = subprocess.run([sys.executable, str(standalone / "tools" / "audit_exports.py"),
+                             str(exports / "scenario.json"), str(exports / "optimized.csv"),
+                             str(exports / "baseline.csv"), str(summary_path)],
+                            capture_output=True, text=True, check=False)
+    rejected(result, "cannot read dependency lock")
+
+
 @pytest.mark.parametrize("field,value", [
     ("dependency_lock_sha256", "sha256:" + "0" * 64),
     ("solver_version", "0.0.0"),

@@ -25,3 +25,5 @@ python tools/audit_exports.py examples/synthetic-day.json outputs/ci/optimized.c
 v0.1.3 复核：本机 WSL 列表命令退出 1，未发现可用发行版；Docker/Podman 命令不存在，因此没有独立 Linux 运行。工作流新增 OS 与 Python 版本打印，仍只用合成数据，未上传数据或产物。场景原始字节指纹可避免路径/本地时区影响，但 LF/CRLF 或 BOM 不同会有不同摘要；生成器与审计器均在 Windows 上测试这些编码组合。仅解析 YAML 或审阅工作流不能算 Linux/macOS 测试通过。 / No Linux environment was available; provenance and newline behavior were checked on Windows only.
 
 v0.1.4 静态复核：工作流仍为手动触发；权限仅 `contents: read`；使用 `actions/checkout@v7`、`actions/setup-python@v7`、Python 3.12，安装 `.[test]` 后运行完整 pytest、生成合成导出并审计。无上传产物步骤、无仓库密钥引用。`pip install` 在未来的托管运行中仍需网络及第三方包来源，当前未运行或下载；现有依赖未完全锁定。Git HEAD/状态现在进入汇总，测试生成与审计必须在同一工作流检出状态执行。 / The workflow was reviewed, not executed; dependency resolution and hosted behavior remain unverified.
+
+v0.1.6 静态复核：矩阵仍为手动触发、只读仓库权限、合成数据且无上传步骤。Windows 安装分支使用实测的 `verified-win-py312.txt`；Ubuntu/macOS 安装分支只使用 `pyproject.toml` 直接声明，传递依赖未锁。**动态验证仅在本机 Windows 的独立虚拟环境完成**；没有运行 Linux、macOS 或托管矩阵。存在工作流配置不等于跨平台通过。 / The matrix is still manual and synthetic-only. Windows uses the observed snapshot; other OS branches use declarations. Only an isolated local Windows install was exercised.

@@ -24,3 +24,5 @@ v0.1.2 增加审计器公开 CLI 黑盒测试：正常退出 0；空/截断文�
 v0.1.3 增加原始字节指纹及汇总元数据回归：相同场景可复核；输入字段、数值文本或时区原文改变后旧汇总失败；伪造/缺失模型版本、指纹、求解器或状态失败；同步更新指纹但保留旧结果仍触发输入回显失败；UTF-8 BOM 与 LF/CRLF 生成并审计通过。性能工具 `tools/benchmark_audit.py` 生成 6 与 50,000 时段的合成导出、近 32 MiB 有效汇总及三类超限输入，测量审计 CLI 耗时和 Windows 子进程峰值工作集。最终测试数量和资源数值见 v0.1.3 报告。 / Provenance and encoding regressions plus bounded performance cases are recorded in the stage report.
 
 v0.1.4 回归覆盖完整模型源码摘要、Git 提交及 clean/dirty/unavailable 状态、缺失字段和旧汇总；复制并改变 `core.py` 可复现版本不匹配。性能工具对 5 类合成输入各运行 2–10 次（默认 3），记录每次端到端时间与峰值工作集，并汇总中位数、最小值、最大值。拒绝覆盖已有输出目录。测试及性能测量的实际结果以 v0.1.4 阶段报告为准。 / Regression covers source-linked versions, Git context, legacy metadata, and repeated bounded audit timing.
+
+v0.1.6 当前审计器增加旧 `run` schema 不改写的黑盒负例、缺少依赖约束文件的失败定位。历史模式的完整正反测试矩阵见[历史审计设计](historical-audit-design.md)；设计用例尚未执行，不计入 pytest 通过数。独立 Windows Python 3.12 环境安装、测试与合成审计的实际结果见 v0.1.6 阶段报告。 / New black-box tests confirm fail-closed legacy and missing-lock behavior. Historical-mode cases remain a plan, not passing tests.

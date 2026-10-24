@@ -32,3 +32,5 @@ v0.1.3 核验：指纹使用标准库 `hashlib`，性能工具使用标准库 `s
 v0.1.4 核验：模型版本与 Git 状态查询新增 Python 标准库 `subprocess`、`hashlib` 和本机已安装 Git 的只读命令；重复性能统计使用标准库 `statistics`。`pyproject.toml` 直接依赖与版本未变化，未安装新组件。Git 不可用时不调用远程或安装组件；项目许可证仍待授权，不能据此对外发布。 / No new Python package dependency or license decision was introduced.
 
 v0.1.5 核验：Windows Python 3.12.14 项目环境中的运行与测试依赖闭包已记录于 `requirements/verified-win-py312.txt`；这是实测精确版本约束，不是带 wheel 哈希的跨平台完整锁。`importlib.metadata`、`platform` 和 SHA-256 均为标准库；未安装新包。PyYAML 与 pip 留作本机工具，不计入项目依赖闭包。项目许可证仍待授权。 / The locally resolved runtime and test closure is recorded as exact version constraints, without installing packages or granting a project license.
+
+v0.1.6 核验：独立 Windows CPython 3.12.14 虚拟环境按快照重装，`pip check` 与完整测试通过；Pyomo 6.9.5、highspy/HiGHS API 1.15.1、NumPy 2.5.4、PLY 3.11 和六个测试依赖版本与记录相符。未收集 wheel 哈希，未运行其他平台或托管 CI，未新增项目 LICENSE。 / An isolated Windows reinstall reproduced observed versions and tests, without cross-platform or artifact-origin claims.
