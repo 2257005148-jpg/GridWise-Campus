@@ -1,6 +1,8 @@
 import copy
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -124,3 +126,62 @@ def test_no_battery_baseline_infeasible_when_grid_cap_too_low():
     data["grid_max_kw"] = 0
     with pytest.raises(SolverError, match="no optimal solution"):
         solve(parse_scenario(data), with_battery=False)
+
+
+@pytest.mark.parametrize("step", [0.25, 0.5, 1.0])
+def test_time_step_and_extreme_valid_prices(step):
+    data = raw()
+    data["step_hours"] = step
+    data["timeseries"] = data["timeseries"][:2]
+    first = datetime.fromisoformat(data["timeseries"][0]["timestamp"])
+    data["timeseries"][1]["timestamp"] = (first + timedelta(hours=step)).isoformat()
+    data["battery"].update(initial_kwh=0, terminal_kwh=0, max_charge_kw=0, max_discharge_kw=0)
+    data["timeseries"][0].update(load_kw=10, pv_kw=0, price_cny_per_kwh=0)
+    data["timeseries"][1].update(load_kw=10, pv_kw=0, price_cny_per_kwh=1_000_000)
+    for enabled in (True, False):
+        result = solve(parse_scenario(data), with_battery=enabled)
+        assert result["grid_energy_kwh"] == pytest.approx(20 * step)
+        assert result["total_cost_cny"] == pytest.approx(10_000_000 * step)
+        assert result["peak_grid_kw"] == pytest.approx(10)
+
+
+def test_terminal_soc_can_make_model_infeasible():
+    data = raw()
+    data["timeseries"] = data["timeseries"][:1]
+    data["timeseries"][0].update(load_kw=0, pv_kw=0)
+    data["battery"].update(initial_kwh=0, terminal_kwh=80)
+    with pytest.raises(SolverError):
+        solve(parse_scenario(data))
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda d: d["timeseries"][0].pop("timestamp"),
+    lambda d: d["timeseries"][1].update(timestamp="2026-01-01T07:00:00+08:00"),
+    lambda d: d["timeseries"][0].update(load_kw=float("nan")),
+    lambda d: d["timeseries"][0].update(price_cny_per_kwh=float("inf")),
+    lambda d: d.update(energy_unit="MWh"),
+    lambda d: d.update(price_unit="USD/kWh"),
+])
+def test_additional_invalid_input(mutate):
+    data = raw()
+    mutate(data)
+    with pytest.raises(InputError):
+        parse_scenario(data)
+
+
+def test_solver_nonoptimal_status_is_rejected(monkeypatch):
+    import pyomo.environ as pyo
+
+    class NonoptimalSolver:
+        def available(self, exception_flag=False):
+            return True
+
+        def solve(self, model, load_solutions=False):
+            assert load_solutions is False
+            return SimpleNamespace(solver=SimpleNamespace(
+                status=pyo.SolverStatus.ok,
+                termination_condition=pyo.TerminationCondition.infeasible))
+
+    monkeypatch.setattr(pyo, "SolverFactory", lambda name: NonoptimalSolver())
+    with pytest.raises(SolverError, match="no optimal solution"):
+        solve(parse_scenario(raw()))
