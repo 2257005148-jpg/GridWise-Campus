@@ -30,3 +30,5 @@ v0.1.2 核验：独立审计器只用 Python 标准库，`pyproject.toml` 直接
 v0.1.3 核验：指纹使用标准库 `hashlib`，性能工具使用标准库 `subprocess` 与 Windows `ctypes`；`pyproject.toml` 直接依赖版本未变，没有安装新组件。性能峰值内存为 Windows `GetProcessMemoryInfo` 的 `PeakWorkingSetSize`，不依赖 `psutil`。CI 仅增加系统与 Python 版本打印；既有 Action 引用和权限不变。项目许可证、间接依赖锁定及发布许可审查仍未解决。 / No new package dependency or license grant; the benchmark uses the standard library and Windows memory API.
 
 v0.1.4 核验：模型版本与 Git 状态查询新增 Python 标准库 `subprocess`、`hashlib` 和本机已安装 Git 的只读命令；重复性能统计使用标准库 `statistics`。`pyproject.toml` 直接依赖与版本未变化，未安装新组件。Git 不可用时不调用远程或安装组件；项目许可证仍待授权，不能据此对外发布。 / No new Python package dependency or license decision was introduced.
+
+v0.1.5 核验：Windows Python 3.12.14 项目环境中的运行与测试依赖闭包已记录于 `requirements/verified-win-py312.txt`；这是实测精确版本约束，不是带 wheel 哈希的跨平台完整锁。`importlib.metadata`、`platform` 和 SHA-256 均为标准库；未安装新包。PyYAML 与 pip 留作本机工具，不计入项目依赖闭包。项目许可证仍待授权。 / The locally resolved runtime and test closure is recorded as exact version constraints, without installing packages or granting a project license.

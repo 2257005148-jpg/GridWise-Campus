@@ -34,3 +34,7 @@ Windows、Linux 和 macOS 上，只要文件字节一致，SHA-256 结果应一�
 若 Git 不存在、当前目录不属于本项目的仓库或 Git 命令失败，两个字段均为字符串 `unavailable`；独立审计器在相同无 Git 环境中仍可完成模型源码与算术检查。跨有/无 Git 环境或不同 HEAD 审计会明确失败，不能把不可用误写成 clean。旧汇总缺少任何必需的 `run` 字段时退出 2。 / Git-unavailable runs use explicit sentinels; legacy or mismatched provenance fails closed.
 
 Git 提交号、模型源码摘要与场景 SHA-256 都只能关联当前提供的内容和检出状态，不证明代码、输入或求解器执行真实可信。`core.py` 摘要不覆盖 CLI、依赖 wheel 或审计器；这些变化依赖 Git 状态与提交号识别。没有 Git 的分发包不具备这一层来源识别。 / None of these identifiers is an authenticity proof; the model digest covers only `core.py`.
+
+## v0.1.5 运行环境 / Execution environment
+
+运行汇总另记录 Python、操作系统、求解器与运行依赖版本，以及本机版本约束快照的 SHA-256；核验范围和历史审计设计见 [运行环境快照](environment-reproducibility.md)。旧汇总缺少新增字段时当前审计器会失败关闭，不会自动补写。 / The run manifest now records observed environment versions and the constraints snapshot digest. See the linked environment note for scope and historical-audit design. Old summaries missing the new fields fail closed.

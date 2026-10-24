@@ -21,6 +21,8 @@ from pathlib import Path
 TOL = Decimal("0.00001")
 MODEL_FAMILY = "cost-mip-v1"
 ROOT = Path(__file__).resolve().parents[1]
+LOCK_PATH = ROOT / "requirements" / "verified-win-py312.txt"
+RUNTIME_PACKAGES = ("pyomo", "highspy", "numpy", "ply")
 MAX_FILE_BYTES = 32 * 1024 * 1024
 MAX_CSV_LINE_BYTES = 64 * 1024
 MAX_NUMERIC_CHARS = 128
@@ -64,7 +66,7 @@ def git_provenance():
                               capture_output=True, text=True, encoding="utf-8", errors="replace",
                               timeout=5, check=True).stdout.strip()
         status = subprocess.run(["git", "-C", str(ROOT), "status", "--porcelain",
-                                 "--untracked-files=all", "--", "src", "tools", "pyproject.toml"],
+                                 "--untracked-files=all", "--", "src", "tools", "requirements", "pyproject.toml"],
                                 capture_output=True, text=True, encoding="utf-8", errors="replace",
                                 timeout=5, check=True).stdout
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
@@ -258,7 +260,8 @@ def audit(scenario_path, optimized_path, baseline_path, summary_path):
     exact_fields(summary, ("run", "optimized", "baseline"), "summary")
     run = field(summary, "run", "summary")
     exact_fields(run, ("model_version", "git_commit", "source_state", "scenario_sha256",
-                       "solver_name", "status"), "summary.run")
+                       "solver_name", "status", "python_version", "operating_system",
+                       "solver_version", "dependency_versions", "dependency_lock_sha256"), "summary.run")
     expected_version = model_version()
     if field(run, "model_version", "summary.run") != expected_version:
         fail("summary.run.model_version", f"does not match current core.py ({expected_version})")
@@ -274,6 +277,49 @@ def audit(scenario_path, optimized_path, baseline_path, summary_path):
         fail("summary.run.solver_name", "must be appsi_highs")
     if field(run, "status", "summary.run") != "optimal":
         fail("summary.run.status", "must be optimal")
+    for name in ("python_version", "operating_system", "solver_version"):
+        value = field(run, name, "summary.run")
+        if not isinstance(value, str) or not value or len(value) > 256:
+            fail(f"summary.run.{name}", "must be a nonempty string of at most 256 characters")
+    versions = field(run, "dependency_versions", "summary.run")
+    exact_fields(versions, RUNTIME_PACKAGES, "summary.run.dependency_versions")
+    for name in RUNTIME_PACKAGES:
+        value = versions[name]
+        if not isinstance(value, str) or not value or len(value) > 128:
+            fail(f"summary.run.dependency_versions.{name}", "invalid version")
+    if run["solver_version"] != versions["highspy"]:
+        fail("summary.run.solver_version", "differs from highspy dependency version")
+    try:
+        lock_bytes = LOCK_PATH.read_bytes()
+        lock_hash = "sha256:" + hashlib.sha256(lock_bytes).hexdigest()
+    except OSError:
+        lock_bytes = None
+        lock_hash = "unavailable"
+    if lock_bytes is None:
+        fail(str(LOCK_PATH), "cannot read dependency lock")
+    if run["dependency_lock_sha256"] != lock_hash:
+        fail("summary.run.dependency_lock_sha256", f"does not match current lock ({lock_hash})")
+    try:
+        lines = lock_bytes.decode("utf-8").splitlines()
+    except UnicodeError:
+        fail(str(LOCK_PATH), "lock is not UTF-8")
+    pins = {}
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.count("==") != 1:
+            fail(str(LOCK_PATH), f"invalid exact pin {line[:80]}")
+        name, version = line.split("==")
+        key = name.lower()
+        if not name or not version or key in pins:
+            fail(str(LOCK_PATH), f"invalid or repeated pin {name}")
+        pins[key] = version
+    for name in RUNTIME_PACKAGES:
+        if name not in pins:
+            fail(str(LOCK_PATH), f"missing runtime pin {name}")
+        if versions[name] != pins[name]:
+            fail(f"summary.run.dependency_versions.{name}", f"does not match lock pin {pins[name]}")
 
     results = {}
     for kind, path, enabled in (("optimized", optimized_path, True), ("baseline", baseline_path, False)):

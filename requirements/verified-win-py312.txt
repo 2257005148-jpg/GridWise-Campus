@@ -1,0 +1,14 @@
+# Observed dependency closure in the Windows CPython 3.12.14 project venv.
+# Exact version constraints, not wheel hashes or a cross-platform lock.
+# Runtime (direct and transitive)
+pyomo==6.9.5
+highspy==1.15.1
+numpy==2.5.4
+ply==3.11
+# Test extra (direct and transitive, including Windows marker dependency)
+pytest==8.4.2
+colorama==0.4.6
+iniconfig==2.3.1
+packaging==26.3
+pluggy==1.7.0
+Pygments==2.21.0

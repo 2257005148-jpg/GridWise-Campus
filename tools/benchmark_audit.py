@@ -22,6 +22,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from audit_exports import git_provenance, model_version
+from gridwise.environment import run_environment
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -77,7 +78,7 @@ def make_valid(directory, periods, *, pad_summary_to=None):
     summary = {"run": {"model_version": model_version(), "git_commit": git_commit,
                        "source_state": source_state,
                        "scenario_sha256": "sha256:" + hashlib.sha256(source).hexdigest(),
-                       "solver_name": "appsi_highs", "status": "optimal"}}
+                       "solver_name": "appsi_highs", "status": "optimal", **run_environment()}}
     for kind, enabled in (("optimized", True), ("baseline", False)):
         summary[kind] = {"status": "optimal", "with_battery": enabled, "rows": rows,
                          "total_cost_cny": 0, "grid_energy_kwh": 0,

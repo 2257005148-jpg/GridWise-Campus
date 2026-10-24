@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from gridwise.cli import run
+from gridwise.environment import run_environment
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -66,7 +67,7 @@ def test_summary_records_exact_source_fingerprint_and_run_metadata(exports):
     head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True,
                           text=True, encoding="utf-8", errors="replace", check=True).stdout.strip()
     changes = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all",
-                              "--", "src", "tools", "pyproject.toml"], cwd=ROOT,
+                              "--", "src", "tools", "requirements", "pyproject.toml"], cwd=ROOT,
                              capture_output=True, text=True, encoding="utf-8", errors="replace",
                              check=True).stdout
     assert summary["run"] == {
@@ -76,6 +77,7 @@ def test_summary_records_exact_source_fingerprint_and_run_metadata(exports):
         "scenario_sha256": "sha256:" + hashlib.sha256(source).hexdigest(),
         "solver_name": "appsi_highs",
         "status": "optimal",
+        **run_environment(),
     }
     assert check(exports).returncode == 0
 
@@ -139,10 +141,65 @@ def test_audit_rejects_missing_provenance_field(exports, field):
     rejected(check(exports), f"missing field {field}")
 
 
+@pytest.mark.parametrize("field", ["python_version", "operating_system", "solver_version",
+                                    "dependency_versions", "dependency_lock_sha256"])
+def test_audit_rejects_missing_environment_metadata(exports, field):
+    path = exports / "summary.json"
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    summary["run"].pop(field)
+    path.write_text(json.dumps(summary), encoding="utf-8")
+    rejected(check(exports), f"missing field {field}")
+
+
+@pytest.mark.parametrize("field,value", [
+    ("dependency_lock_sha256", "sha256:" + "0" * 64),
+    ("solver_version", "0.0.0"),
+])
+def test_audit_rejects_changed_environment_metadata(exports, field, value):
+    path = exports / "summary.json"
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    summary["run"][field] = value
+    path.write_text(json.dumps(summary), encoding="utf-8")
+    rejected(check(exports), f"summary.run.{field}")
+
+
+def test_audit_rejects_changed_runtime_dependency_version(exports):
+    path = exports / "summary.json"
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    summary["run"]["dependency_versions"]["numpy"] = "0.0.0"
+    path.write_text(json.dumps(summary), encoding="utf-8")
+    rejected(check(exports), "summary.run.dependency_versions.numpy")
+
+
+def test_audit_rejects_changed_lock_bytes_without_changing_exports(exports, tmp_path):
+    standalone = tmp_path / "standalone"
+    (standalone / "tools").mkdir(parents=True)
+    (standalone / "src" / "gridwise").mkdir(parents=True)
+    (standalone / "requirements").mkdir()
+    (standalone / "tools" / "audit_exports.py").write_bytes(AUDITOR.read_bytes())
+    (standalone / "src" / "gridwise" / "core.py").write_bytes(
+        (ROOT / "src" / "gridwise" / "core.py").read_bytes())
+    lock = (ROOT / "requirements" / "verified-win-py312.txt").read_bytes()
+    (standalone / "requirements" / "verified-win-py312.txt").write_bytes(lock + b"# changed\n")
+    summary_path = exports / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["run"]["git_commit"] = "unavailable"
+    summary["run"]["source_state"] = "unavailable"
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    result = subprocess.run([sys.executable, str(standalone / "tools" / "audit_exports.py"),
+                             str(exports / "scenario.json"), str(exports / "optimized.csv"),
+                             str(exports / "baseline.csv"), str(exports / "summary.json")],
+                            capture_output=True, text=True, check=False)
+    rejected(result, "summary.run.dependency_lock_sha256")
+
+
 def test_model_source_change_invalidates_old_summary(exports, tmp_path):
     standalone = tmp_path / "standalone"
     (standalone / "tools").mkdir(parents=True)
     (standalone / "src" / "gridwise").mkdir(parents=True)
+    (standalone / "requirements").mkdir()
+    (standalone / "requirements" / "verified-win-py312.txt").write_bytes(
+        (ROOT / "requirements" / "verified-win-py312.txt").read_bytes())
     audit_copy = standalone / "tools" / "audit_exports.py"
     audit_copy.write_bytes(AUDITOR.read_bytes())
     core_copy = standalone / "src" / "gridwise" / "core.py"
@@ -158,6 +215,9 @@ def test_git_unavailable_is_explicit_and_auditable(tmp_path, monkeypatch):
     standalone = tmp_path / "standalone"
     (standalone / "tools").mkdir(parents=True)
     (standalone / "src" / "gridwise").mkdir(parents=True)
+    (standalone / "requirements").mkdir()
+    (standalone / "requirements" / "verified-win-py312.txt").write_bytes(
+        (ROOT / "requirements" / "verified-win-py312.txt").read_bytes())
     audit_copy = standalone / "tools" / "audit_exports.py"
     audit_copy.write_bytes(AUDITOR.read_bytes())
     (standalone / "src" / "gridwise" / "core.py").write_bytes(

@@ -9,6 +9,7 @@ from pathlib import Path
 from html import escape
 
 from .core import InputError, SolverError, parse_scenario, solve
+from .environment import run_environment
 
 
 MODEL_FAMILY = "cost-mip-v1"
@@ -32,7 +33,7 @@ def git_provenance() -> tuple[str, str]:
                               capture_output=True, text=True, encoding="utf-8", errors="replace",
                               timeout=5, check=True).stdout.strip()
         status = subprocess.run(["git", "-C", str(root), "status", "--porcelain",
-                                 "--untracked-files=all", "--", "src", "tools", "pyproject.toml"],
+                                 "--untracked-files=all", "--", "src", "tools", "requirements", "pyproject.toml"],
                                 capture_output=True, text=True, encoding="utf-8", errors="replace",
                                 timeout=5, check=True).stdout
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
@@ -68,7 +69,7 @@ def run(input_path: Path, output_dir: Path, solver_name="appsi_highs") -> dict:
     baseline = solve(scenario, solver_name=solver_name, with_battery=False)
     results = {"run": {"model_version": model_version(), "git_commit": git_commit,
                        "source_state": source_state, "scenario_sha256": scenario_sha256,
-                       "solver_name": solver_name, "status": "optimal"},
+                       "solver_name": solver_name, "status": "optimal", **run_environment()},
                "optimized": optimized, "baseline": baseline}
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "summary.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
