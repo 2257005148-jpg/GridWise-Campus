@@ -10,6 +10,7 @@ import csv
 import hashlib
 import io
 import json
+import subprocess
 import sys
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -18,7 +19,8 @@ from pathlib import Path
 
 
 TOL = Decimal("0.00001")
-MODEL_VERSION = "cost-mip-v1"
+MODEL_FAMILY = "cost-mip-v1"
+ROOT = Path(__file__).resolve().parents[1]
 MAX_FILE_BYTES = 32 * 1024 * 1024
 MAX_CSV_LINE_BYTES = 64 * 1024
 MAX_NUMERIC_CHARS = 128
@@ -40,6 +42,34 @@ class AuditError(ValueError):
 
 def fail(where, detail):
     raise AuditError(f"{where}: {detail}")
+
+
+def model_version():
+    try:
+        source = (ROOT / "src" / "gridwise" / "core.py").read_bytes()
+    except OSError as exc:
+        fail("model source", f"cannot read core.py: {exc}")
+    normalized = source.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return f"{MODEL_FAMILY}+sha256.{hashlib.sha256(normalized).hexdigest()}"
+
+
+def git_provenance():
+    try:
+        top = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, encoding="utf-8", errors="replace",
+                             timeout=5, check=True).stdout.strip()
+        if Path(top).resolve() != ROOT:
+            return "unavailable", "unavailable"
+        head = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+                              capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              timeout=5, check=True).stdout.strip()
+        status = subprocess.run(["git", "-C", str(ROOT), "status", "--porcelain",
+                                 "--untracked-files=all", "--", "src", "tools", "pyproject.toml"],
+                                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                timeout=5, check=True).stdout
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return "unavailable", "unavailable"
+    return head, "dirty" if status else "clean"
 
 
 def field(mapping, name, where):
@@ -227,9 +257,16 @@ def audit(scenario_path, optimized_path, baseline_path, summary_path):
     summary = read_json(summary_path)
     exact_fields(summary, ("run", "optimized", "baseline"), "summary")
     run = field(summary, "run", "summary")
-    exact_fields(run, ("model_version", "scenario_sha256", "solver_name", "status"), "summary.run")
-    if field(run, "model_version", "summary.run") != MODEL_VERSION:
-        fail("summary.run.model_version", f"must be {MODEL_VERSION}")
+    exact_fields(run, ("model_version", "git_commit", "source_state", "scenario_sha256",
+                       "solver_name", "status"), "summary.run")
+    expected_version = model_version()
+    if field(run, "model_version", "summary.run") != expected_version:
+        fail("summary.run.model_version", f"does not match current core.py ({expected_version})")
+    expected_commit, expected_state = git_provenance()
+    if run["git_commit"] != expected_commit:
+        fail("summary.run.git_commit", f"does not match current Git HEAD ({expected_commit})")
+    if field(run, "source_state", "summary.run") != expected_state:
+        fail("summary.run.source_state", f"does not match current source state ({expected_state})")
     expected_hash = "sha256:" + hashlib.sha256(source_bytes).hexdigest()
     if field(run, "scenario_sha256", "summary.run") != expected_hash:
         fail("summary.run.scenario_sha256", "does not match source JSON bytes")

@@ -4,13 +4,40 @@ import argparse
 import csv
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 from html import escape
 
 from .core import InputError, SolverError, parse_scenario, solve
 
 
-MODEL_VERSION = "cost-mip-v1"
+MODEL_FAMILY = "cost-mip-v1"
+
+
+def model_version() -> str:
+    source = Path(__file__).with_name("core.py").read_bytes()
+    normalized = source.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return f"{MODEL_FAMILY}+sha256.{hashlib.sha256(normalized).hexdigest()}"
+
+
+def git_provenance() -> tuple[str, str]:
+    root = Path(__file__).resolve().parents[2]
+    try:
+        top = subprocess.run(["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, encoding="utf-8", errors="replace",
+                             timeout=5, check=True).stdout.strip()
+        if Path(top).resolve() != root:
+            return "unavailable", "unavailable"
+        head = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                              capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              timeout=5, check=True).stdout.strip()
+        status = subprocess.run(["git", "-C", str(root), "status", "--porcelain",
+                                 "--untracked-files=all", "--", "src", "tools", "pyproject.toml"],
+                                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                timeout=5, check=True).stdout
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return "unavailable", "unavailable"
+    return head, "dirty" if status else "clean"
 
 
 def _chart(results: dict) -> str:
@@ -36,9 +63,11 @@ def run(input_path: Path, output_dir: Path, solver_name="appsi_highs") -> dict:
     source_bytes = input_path.read_bytes()
     scenario = parse_scenario(json.loads(source_bytes.decode("utf-8-sig")))
     scenario_sha256 = "sha256:" + hashlib.sha256(source_bytes).hexdigest()
+    git_commit, source_state = git_provenance()
     optimized = solve(scenario, solver_name=solver_name)
     baseline = solve(scenario, solver_name=solver_name, with_battery=False)
-    results = {"run": {"model_version": MODEL_VERSION, "scenario_sha256": scenario_sha256,
+    results = {"run": {"model_version": model_version(), "git_commit": git_commit,
+                       "source_state": source_state, "scenario_sha256": scenario_sha256,
                        "solver_name": solver_name, "status": "optimal"},
                "optimized": optimized, "baseline": baseline}
     output_dir.mkdir(parents=True, exist_ok=True)

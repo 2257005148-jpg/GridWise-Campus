@@ -28,3 +28,5 @@
 v0.1.2 核验：独立审计器只用 Python 标准库，`pyproject.toml` 直接依赖没有变化。本机项目环境再次确认 Python 3.12.14、Pyomo 6.9.5、highspy 1.15.1、pytest 8.4.2；未引入新运行依赖。新增的未执行 CI 准备稿引用 [actions/checkout](https://github.com/actions/checkout) v7 和 [actions/setup-python](https://github.com/actions/setup-python) v7；两者官方仓库声明 MIT 许可，但本机未下载或运行这些 Action。项目许可证仍未决定。 / No new runtime dependency; the CI Actions were reviewed from their official repositories but not executed locally.
 
 v0.1.3 核验：指纹使用标准库 `hashlib`，性能工具使用标准库 `subprocess` 与 Windows `ctypes`；`pyproject.toml` 直接依赖版本未变，没有安装新组件。性能峰值内存为 Windows `GetProcessMemoryInfo` 的 `PeakWorkingSetSize`，不依赖 `psutil`。CI 仅增加系统与 Python 版本打印；既有 Action 引用和权限不变。项目许可证、间接依赖锁定及发布许可审查仍未解决。 / No new package dependency or license grant; the benchmark uses the standard library and Windows memory API.
+
+v0.1.4 核验：模型版本与 Git 状态查询新增 Python 标准库 `subprocess`、`hashlib` 和本机已安装 Git 的只读命令；重复性能统计使用标准库 `statistics`。`pyproject.toml` 直接依赖与版本未变化，未安装新组件。Git 不可用时不调用远程或安装组件；项目许可证仍待授权，不能据此对外发布。 / No new Python package dependency or license decision was introduced.

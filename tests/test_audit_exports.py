@@ -62,8 +62,17 @@ def test_audit_accepts_same_input_comparison(exports):
 def test_summary_records_exact_source_fingerprint_and_run_metadata(exports):
     source = (exports / "scenario.json").read_bytes()
     summary = json.loads((exports / "summary.json").read_text(encoding="utf-8"))
+    core = (ROOT / "src" / "gridwise" / "core.py").read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True,
+                          text=True, encoding="utf-8", errors="replace", check=True).stdout.strip()
+    changes = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all",
+                              "--", "src", "tools", "pyproject.toml"], cwd=ROOT,
+                             capture_output=True, text=True, encoding="utf-8", errors="replace",
+                             check=True).stdout
     assert summary["run"] == {
-        "model_version": "cost-mip-v1",
+        "model_version": "cost-mip-v1+sha256." + hashlib.sha256(core).hexdigest(),
+        "git_commit": head,
+        "source_state": "dirty" if changes else "clean",
         "scenario_sha256": "sha256:" + hashlib.sha256(source).hexdigest(),
         "solver_name": "appsi_highs",
         "status": "optimal",
@@ -99,6 +108,8 @@ def test_old_exports_rejected_after_source_bytes_change(exports, change):
 
 @pytest.mark.parametrize("field,value", [
     ("model_version", "cost-mip-v2"),
+    ("git_commit", "0" * 40),
+    ("source_state", "invalid"),
     ("scenario_sha256", "sha256:" + "0" * 64),
     ("solver_name", "other_solver"),
     ("status", "infeasible"),
@@ -117,6 +128,58 @@ def test_audit_rejects_missing_run_metadata(exports):
     summary.pop("run")
     path.write_text(json.dumps(summary), encoding="utf-8")
     rejected(check(exports), "summary: missing field run")
+
+
+@pytest.mark.parametrize("field", ["model_version", "git_commit", "source_state", "scenario_sha256"])
+def test_audit_rejects_missing_provenance_field(exports, field):
+    path = exports / "summary.json"
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    summary["run"].pop(field)
+    path.write_text(json.dumps(summary), encoding="utf-8")
+    rejected(check(exports), f"missing field {field}")
+
+
+def test_model_source_change_invalidates_old_summary(exports, tmp_path):
+    standalone = tmp_path / "standalone"
+    (standalone / "tools").mkdir(parents=True)
+    (standalone / "src" / "gridwise").mkdir(parents=True)
+    audit_copy = standalone / "tools" / "audit_exports.py"
+    audit_copy.write_bytes(AUDITOR.read_bytes())
+    core_copy = standalone / "src" / "gridwise" / "core.py"
+    core_copy.write_bytes((ROOT / "src" / "gridwise" / "core.py").read_bytes() + b"\n# changed\n")
+    result = subprocess.run([sys.executable, str(audit_copy), str(exports / "scenario.json"),
+                             str(exports / "optimized.csv"), str(exports / "baseline.csv"),
+                             str(exports / "summary.json")], capture_output=True, text=True, check=False)
+    rejected(result, "summary.run.model_version")
+
+
+def test_git_unavailable_is_explicit_and_auditable(tmp_path, monkeypatch):
+    from gridwise import cli
+    standalone = tmp_path / "standalone"
+    (standalone / "tools").mkdir(parents=True)
+    (standalone / "src" / "gridwise").mkdir(parents=True)
+    audit_copy = standalone / "tools" / "audit_exports.py"
+    audit_copy.write_bytes(AUDITOR.read_bytes())
+    (standalone / "src" / "gridwise" / "core.py").write_bytes(
+        (ROOT / "src" / "gridwise" / "core.py").read_bytes())
+    source = standalone / "scenario.json"
+    source.write_bytes(SOURCE.read_bytes())
+    monkeypatch.setattr(cli, "git_provenance", lambda: ("unavailable", "unavailable"))
+    cli.run(source, standalone)
+    summary = json.loads((standalone / "summary.json").read_text(encoding="utf-8"))
+    assert summary["run"]["git_commit"] == "unavailable"
+    result = subprocess.run([sys.executable, str(audit_copy), str(source),
+                             str(standalone / "optimized.csv"), str(standalone / "baseline.csv"),
+                             str(standalone / "summary.json")], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+def test_git_command_missing_returns_explicit_unavailable(monkeypatch):
+    from gridwise import cli
+    def missing_git(*args, **kwargs):
+        raise FileNotFoundError("git unavailable")
+    monkeypatch.setattr(cli.subprocess, "run", missing_git)
+    assert cli.git_provenance() == ("unavailable", "unavailable")
 
 
 @pytest.mark.parametrize("bom,crlf", [(False, False), (False, True), (True, False), (True, True)])
