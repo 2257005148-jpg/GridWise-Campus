@@ -2,11 +2,15 @@
 
 import argparse
 import csv
+import hashlib
 import json
 from pathlib import Path
 from html import escape
 
 from .core import InputError, SolverError, parse_scenario, solve
+
+
+MODEL_VERSION = "cost-mip-v1"
 
 
 def _chart(results: dict) -> str:
@@ -29,13 +33,18 @@ def _chart(results: dict) -> str:
 
 
 def run(input_path: Path, output_dir: Path, solver_name="appsi_highs") -> dict:
-    scenario = parse_scenario(json.loads(input_path.read_text(encoding="utf-8")))
+    source_bytes = input_path.read_bytes()
+    scenario = parse_scenario(json.loads(source_bytes.decode("utf-8-sig")))
+    scenario_sha256 = "sha256:" + hashlib.sha256(source_bytes).hexdigest()
     optimized = solve(scenario, solver_name=solver_name)
     baseline = solve(scenario, solver_name=solver_name, with_battery=False)
-    results = {"optimized": optimized, "baseline": baseline}
+    results = {"run": {"model_version": MODEL_VERSION, "scenario_sha256": scenario_sha256,
+                       "solver_name": solver_name, "status": "optimal"},
+               "optimized": optimized, "baseline": baseline}
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "summary.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
-    for name, result in results.items():
+    for name in ("optimized", "baseline"):
+        result = results[name]
         with (output_dir / f"{name}.csv").open("w", newline="", encoding="utf-8-sig") as stream:
             writer = csv.DictWriter(stream, fieldnames=result["rows"][0].keys())
             writer.writeheader()
@@ -53,7 +62,8 @@ def main() -> None:
         results = run(args.input, args.output)
     except (InputError, SolverError, OSError, ValueError) as exc:
         parser.exit(2, f"gridwise: {exc}\n")
-    for name, result in results.items():
+    for name in ("optimized", "baseline"):
+        result = results[name]
         print(f"{name}: cost={result['total_cost_cny']:.2f} CNY; grid={result['grid_energy_kwh']:.2f} kWh; peak={result['peak_grid_kw']:.2f} kW; curtailment={result['pv_curtailed_kwh']:.2f} kWh")
 
 

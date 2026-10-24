@@ -21,3 +21,5 @@
 v0.1.2 离线验证资源边界 / Offline audit bounds: 单文件 ≤ 32 MiB，CSV 单物理行 ≤ 64 KiB，时段数 ≤ 50,000，数值 token ≤ 128 字符，单步时长 ≤ 24 小时，任意数值绝对值 ≤ 10¹²（相应字段单位）。文件、行、时段及 token 限制审计过程内存/解析成本；24 小时保持当前子日调度粒度；10¹² 是为拒绝明显荒谬输入设置的宽松软件边界，并非校园设备的物理额定值。这些适用输入界限已同步到模型输入。50,000 个 15 分钟时段约覆盖 1.4 年。 / File, line, row and token caps bound parsing resources. The 24-hour and 10¹² caps define the supported synthetic-input envelope, not equipment ratings.
 
 审计器要求场景、汇总及 CSV 使用当前契约的**精确字段集合**，CSV 列顺序也固定；额外字段或重复 JSON 键均失败，避免悄然忽略新数据。 / Exact schema and column order are required; extra fields and duplicate JSON keys fail closed.
+
+v0.1.3 `summary.run.scenario_sha256` 为 `sha256:` 前缀加原始 UTF-8 输入字节的 64 位小写十六进制摘要；不规范化 BOM、换行、键顺序、数值文本或时间戳。`model_version=cost-mip-v1` 表示未改变的纯电费优化模型；`solver_name=appsi_highs`，`status=optimal`。完整来源边界见 `docs/input-provenance.md`。 / The digest covers exact source bytes; metadata identifies the unchanged cost model and configured solver, without asserting input authenticity.

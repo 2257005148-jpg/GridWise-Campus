@@ -7,6 +7,7 @@ No rounding is applied before validation; displayed totals are rounded to 2 deci
 
 import argparse
 import csv
+import hashlib
 import io
 import json
 import sys
@@ -17,6 +18,7 @@ from pathlib import Path
 
 
 TOL = Decimal("0.00001")
+MODEL_VERSION = "cost-mip-v1"
 MAX_FILE_BYTES = 32 * 1024 * 1024
 MAX_CSV_LINE_BYTES = 64 * 1024
 MAX_NUMERIC_CHARS = 128
@@ -109,7 +111,7 @@ def read_limited_bytes(path, kind):
     return data
 
 
-def read_json(path):
+def parse_json_bytes(data, path):
     def reject_constant(value):
         fail(str(path), f"non-finite JSON constant {value}")
     def parse_number(value):
@@ -124,11 +126,15 @@ def read_json(path):
             result[key] = value
         return result
     try:
-        data = read_limited_bytes(path, "JSON").decode("utf-8-sig")
-        return json.loads(data, parse_float=parse_number, parse_int=parse_number,
+        decoded = data.decode("utf-8-sig")
+        return json.loads(decoded, parse_float=parse_number, parse_int=parse_number,
                           parse_constant=reject_constant, object_pairs_hook=unique_keys)
     except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
         fail(str(path), f"cannot read JSON: {exc}")
+
+
+def read_json(path):
+    return parse_json_bytes(read_limited_bytes(path, "JSON"), path)
 
 
 def read_csv(path):
@@ -172,7 +178,8 @@ def read_csv(path):
 
 
 def audit(scenario_path, optimized_path, baseline_path, summary_path):
-    source = read_json(scenario_path)
+    source_bytes = read_limited_bytes(scenario_path, "JSON")
+    source = parse_json_bytes(source_bytes, scenario_path)
     exact_fields(source, ("power_unit", "energy_unit", "price_unit", "step_hours",
                           "grid_max_kw", "battery", "timeseries"), "scenario")
     for name, expected in (("power_unit", "kW"), ("energy_unit", "kWh"),
@@ -218,7 +225,19 @@ def audit(scenario_path, optimized_path, baseline_path, summary_path):
             number(field(row, name, where), f"{where}.{name}", minimum=0)
 
     summary = read_json(summary_path)
-    exact_fields(summary, ("optimized", "baseline"), "summary")
+    exact_fields(summary, ("run", "optimized", "baseline"), "summary")
+    run = field(summary, "run", "summary")
+    exact_fields(run, ("model_version", "scenario_sha256", "solver_name", "status"), "summary.run")
+    if field(run, "model_version", "summary.run") != MODEL_VERSION:
+        fail("summary.run.model_version", f"must be {MODEL_VERSION}")
+    expected_hash = "sha256:" + hashlib.sha256(source_bytes).hexdigest()
+    if field(run, "scenario_sha256", "summary.run") != expected_hash:
+        fail("summary.run.scenario_sha256", "does not match source JSON bytes")
+    if field(run, "solver_name", "summary.run") != "appsi_highs":
+        fail("summary.run.solver_name", "must be appsi_highs")
+    if field(run, "status", "summary.run") != "optimal":
+        fail("summary.run.status", "must be optimal")
+
     results = {}
     for kind, path, enabled in (("optimized", optimized_path, True), ("baseline", baseline_path, False)):
         result = field(summary, kind, "summary")

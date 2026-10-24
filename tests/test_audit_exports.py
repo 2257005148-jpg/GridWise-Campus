@@ -1,6 +1,7 @@
 """Black-box tests for the standard-library export auditor."""
 
 import csv
+import hashlib
 import json
 import subprocess
 import sys
@@ -56,6 +57,81 @@ def test_audit_accepts_same_input_comparison(exports):
     assert "AUDIT PASSED" in result.stdout
     assert "total_cost_cny=131.01" in result.stdout
     assert "total_cost_cny=162.50" in result.stdout
+
+
+def test_summary_records_exact_source_fingerprint_and_run_metadata(exports):
+    source = (exports / "scenario.json").read_bytes()
+    summary = json.loads((exports / "summary.json").read_text(encoding="utf-8"))
+    assert summary["run"] == {
+        "model_version": "cost-mip-v1",
+        "scenario_sha256": "sha256:" + hashlib.sha256(source).hexdigest(),
+        "solver_name": "appsi_highs",
+        "status": "optimal",
+    }
+    assert check(exports).returncode == 0
+
+
+def test_same_source_bytes_at_new_path_keep_fingerprint_valid(exports):
+    copy = exports / "same scenario.json"
+    copy.write_bytes((exports / "scenario.json").read_bytes())
+    result = subprocess.run(
+        [sys.executable, str(AUDITOR), str(copy), str(exports / "optimized.csv"),
+         str(exports / "baseline.csv"), str(exports / "summary.json")],
+        capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("change", [
+    lambda data: data.replace(b'"step_hours": 1', b'"step_hours": 1.0', 1),
+    lambda data: data.replace(b'"load_kw": 60', b'"load_kw": 61', 1),
+    lambda data: data.replace(b'"price_cny_per_kwh": 0.5', b'"price_cny_per_kwh": 0.6', 1),
+    lambda data: data.replace(b'+08:00', b'+09:00'),
+])
+def test_old_exports_rejected_after_source_bytes_change(exports, change):
+    path = exports / "scenario.json"
+    before = path.read_bytes()
+    after = change(before)
+    assert after != before
+    path.write_bytes(after)
+    result = check(exports)
+    rejected(result, "summary.run.scenario_sha256")
+
+
+@pytest.mark.parametrize("field,value", [
+    ("model_version", "cost-mip-v2"),
+    ("scenario_sha256", "sha256:" + "0" * 64),
+    ("solver_name", "other_solver"),
+    ("status", "infeasible"),
+])
+def test_audit_rejects_changed_run_metadata(exports, field, value):
+    path = exports / "summary.json"
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    summary["run"][field] = value
+    path.write_text(json.dumps(summary), encoding="utf-8")
+    rejected(check(exports), f"summary.run.{field}")
+
+
+def test_audit_rejects_missing_run_metadata(exports):
+    path = exports / "summary.json"
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    summary.pop("run")
+    path.write_text(json.dumps(summary), encoding="utf-8")
+    rejected(check(exports), "summary: missing field run")
+
+
+@pytest.mark.parametrize("bom,crlf", [(False, False), (False, True), (True, False), (True, True)])
+def test_export_and_audit_accept_utf8_bom_and_newlines(tmp_path, bom, crlf):
+    source = SOURCE.read_bytes()
+    if crlf:
+        source = source.replace(b"\n", b"\r\n")
+    if bom:
+        source = b"\xef\xbb\xbf" + source
+    path = tmp_path / "scenario.json"
+    path.write_bytes(source)
+    run(path, tmp_path)
+    summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    assert summary["run"]["scenario_sha256"] == "sha256:" + hashlib.sha256(source).hexdigest()
+    assert check(tmp_path).returncode == 0
 
 
 @pytest.mark.parametrize("field,value,diagnostic", [
@@ -152,6 +228,11 @@ def test_audit_rejects_bad_or_tampered_input(exports, mutate, diagnostic):
     data = json.loads(path.read_text(encoding="utf-8"))
     mutate(data)
     path.write_text(json.dumps(data, allow_nan=True), encoding="utf-8")
+    if diagnostic == "input echo":
+        summary_path = exports / "summary.json"
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        summary["run"]["scenario_sha256"] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+        summary_path.write_text(json.dumps(summary), encoding="utf-8")
     result = check(exports)
     assert result.returncode == 2
     assert diagnostic in result.stderr

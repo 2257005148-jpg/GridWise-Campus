@@ -18,6 +18,8 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
+      - name: Record execution environment
+        run: python -c "import platform, sys; print(platform.platform()); print(sys.version)"
       - name: Install declared test dependencies
         run: python -m pip install -e ".[test]"
       - name: Run all tests

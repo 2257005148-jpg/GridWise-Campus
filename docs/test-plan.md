@@ -20,3 +20,5 @@ v0.1 基线于 2026-10-25 本机运行：`20 passed, 0 failed, 0 skipped`。另�
 v0.1.1 新增审计工具与黑盒失败测试：标准库脚本读取原始 JSON、两个 CSV 和汇总 JSON；对单字段篡改、两份导出同步篡改、缺失列/行/汇总字段、重复或错序时间、非有限数值、错误单位及输入回显不一致均明确拒绝。另测试 15/30/60 分钟步长、零和高价、不可行终端 SOC、求解器非最优状态。阶段运行数量以对应进度报告中的实际 `pytest` 输出为准，不沿用上段 v0.1 的 20 项数字。 / v0.1.1 adds a standard-library export audit and black-box rejection tests; see its progress report for the measured run count.
 
 v0.1.2 增加审计器公开 CLI 黑盒测试：正常退出 0；空/截断文件、畸形 CSV、空 CSV 行、错误编码、额外/重复/错序字段、异常数值、文件/行/时段/步长超限、缺失或拒绝读取的文件均退出 2，stderr 包含定位信息，stdout 不含 `AUDIT PASSED`。同步检查模型输入的步长、时段与数值幅度上限。具体通过/失败/跳过数量以 v0.1.2 阶段报告中的最终命令输出为准。 / CLI black-box cases cover valid inputs, malformed and over-limit inputs, file errors, and fail-closed diagnostics; final counts are recorded in the v0.1.2 report.
+
+v0.1.3 增加原始字节指纹及汇总元数据回归：相同场景可复核；输入字段、数值文本或时区原文改变后旧汇总失败；伪造/缺失模型版本、指纹、求解器或状态失败；同步更新指纹但保留旧结果仍触发输入回显失败；UTF-8 BOM 与 LF/CRLF 生成并审计通过。性能工具 `tools/benchmark_audit.py` 生成 6 与 50,000 时段的合成导出、近 32 MiB 有效汇总及三类超限输入，测量审计 CLI 耗时和 Windows 子进程峰值工作集。最终测试数量和资源数值见 v0.1.3 报告。 / Provenance and encoding regressions plus bounded performance cases are recorded in the stage report.
