@@ -1,0 +1,28 @@
+name: Synthetic validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install declared test dependencies
+        run: python -m pip install -e ".[test]"
+      - name: Run all tests
+        run: python -m pytest -ra -q
+      - name: Generate synthetic exports
+        run: python -m gridwise.cli examples/synthetic-day.json outputs/ci
+      - name: Audit synthetic exports
+        run: python tools/audit_exports.py examples/synthetic-day.json outputs/ci/optimized.csv outputs/ci/baseline.csv outputs/ci/summary.json

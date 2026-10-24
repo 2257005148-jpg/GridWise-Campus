@@ -24,3 +24,5 @@
 测试与本机校验依赖 / Test and local validation dependencies: pytest 8.4.2、pluggy 1.7.0、iniconfig 2.3.1、PyYAML 6.0.3 为 MIT；packaging 26.3 为 Apache-2.0 OR BSD-2-Clause；colorama 0.4.6 已安装许可证为 BSD-3-Clause；Pygments 2.21.0 为 BSD-2-Clause。PyPI 元数据不是独立法律审计，若将来随应用分发第三方 wheel，应随对应包保留其许可证与第三方声明，重新核对精确构建产物。 / Package metadata and installed texts are evidence for this review, not a release audit; redistributing wheels requires retaining their notices and reviewing the exact artifacts.
 
 参考 / References: [Pyomo](https://pypi.org/project/pyomo/6.9.5/), [HiGHS Python](https://pypi.org/project/highspy/1.15.1/), [NumPy](https://pypi.org/project/numpy/2.5.4/), [pytest](https://pypi.org/project/pytest/8.4.2/), [PLY](https://pypi.org/project/ply/3.11/).
+
+v0.1.2 核验：独立审计器只用 Python 标准库，`pyproject.toml` 直接依赖没有变化。本机项目环境再次确认 Python 3.12.14、Pyomo 6.9.5、highspy 1.15.1、pytest 8.4.2；未引入新运行依赖。新增的未执行 CI 准备稿引用 [actions/checkout](https://github.com/actions/checkout) v7 和 [actions/setup-python](https://github.com/actions/setup-python) v7；两者官方仓库声明 MIT 许可，但本机未下载或运行这些 Action。项目许可证仍未决定。 / No new runtime dependency; the CI Actions were reviewed from their official repositories but not executed locally.

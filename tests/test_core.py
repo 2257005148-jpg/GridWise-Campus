@@ -185,3 +185,25 @@ def test_solver_nonoptimal_status_is_rejected(monkeypatch):
     monkeypatch.setattr(pyo, "SolverFactory", lambda name: NonoptimalSolver())
     with pytest.raises(SolverError, match="no optimal solution"):
         solve(parse_scenario(raw()))
+
+
+@pytest.mark.parametrize("step", [25, 1000000])
+def test_excessive_step_is_rejected_by_model_input(step):
+    data = raw()
+    data["step_hours"] = step
+    with pytest.raises(InputError, match="step_hours must be at most 24"):
+        parse_scenario(data)
+
+
+def test_excessive_period_count_is_rejected_by_model_input():
+    data = raw()
+    data["timeseries"] = [data["timeseries"][0]] * 50_001
+    with pytest.raises(InputError, match="timeseries exceeds 50000 periods"):
+        parse_scenario(data)
+
+
+def test_excessive_numeric_magnitude_is_rejected_by_model_input():
+    data = raw()
+    data["grid_max_kw"] = 1e13
+    with pytest.raises(InputError, match="exceeds supported magnitude"):
+        parse_scenario(data)

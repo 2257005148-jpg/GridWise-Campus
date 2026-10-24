@@ -7,6 +7,7 @@ No rounding is applied before validation; displayed totals are rounded to 2 deci
 
 import argparse
 import csv
+import io
 import json
 import sys
 from datetime import datetime
@@ -16,6 +17,12 @@ from pathlib import Path
 
 
 TOL = Decimal("0.00001")
+MAX_FILE_BYTES = 32 * 1024 * 1024
+MAX_CSV_LINE_BYTES = 64 * 1024
+MAX_NUMERIC_CHARS = 128
+MAX_ABS_VALUE = Decimal("1000000000000")
+MAX_PERIODS = 50_000
+MAX_STEP_HOURS = Decimal("24")
 INPUT_FIELDS = ("timestamp", "load_kw", "pv_kw", "price_cny_per_kwh")
 ROW_FIELDS = ("timestamp", "load_kw", "pv_available_kw", "pv_used_kw", "pv_curtailed_kw",
               "grid_kw", "charge_kw", "discharge_kw", "soc_kwh", "price_cny_per_kwh")
@@ -39,9 +46,21 @@ def field(mapping, name, where):
     return mapping[name]
 
 
+def exact_fields(mapping, expected, where):
+    if not isinstance(mapping, dict):
+        fail(where, "expected object")
+    extras = sorted(set(mapping) - set(expected))
+    if extras:
+        fail(where, f"unexpected field {extras[0]}")
+    for name in expected:
+        field(mapping, name, where)
+
+
 def number(value, where, *, minimum=None, positive=False, csv_text=False):
     if isinstance(value, bool) or isinstance(value, (dict, list)) or (isinstance(value, str) and not csv_text):
         fail(where, "expected finite number")
+    if len(str(value)) > MAX_NUMERIC_CHARS:
+        fail(where, f"numeric token exceeds {MAX_NUMERIC_CHARS} characters")
     try:
         result = Decimal(str(value))
     except (InvalidOperation, ValueError):
@@ -53,6 +72,8 @@ def number(value, where, *, minimum=None, positive=False, csv_text=False):
             fail(where, "outside finite Python float range")
     except OverflowError:
         fail(where, "outside finite Python float range")
+    if abs(result) > MAX_ABS_VALUE:
+        fail(where, f"absolute value exceeds {MAX_ABS_VALUE}")
     if positive and result <= 0:
         fail(where, "must be positive")
     if minimum is not None and result < minimum:
@@ -77,29 +98,72 @@ def timestamp(value, where):
     return stamp
 
 
+def read_limited_bytes(path, kind):
+    try:
+        with path.open("rb") as stream:
+            data = stream.read(MAX_FILE_BYTES + 1)
+    except OSError as exc:
+        fail(str(path), f"cannot read {kind}: {exc}")
+    if len(data) > MAX_FILE_BYTES:
+        fail(str(path), f"{kind} exceeds {MAX_FILE_BYTES} bytes")
+    return data
+
+
 def read_json(path):
     def reject_constant(value):
         fail(str(path), f"non-finite JSON constant {value}")
+    def parse_number(value):
+        if len(value) > MAX_NUMERIC_CHARS:
+            fail(str(path), f"numeric token exceeds {MAX_NUMERIC_CHARS} characters")
+        return Decimal(value)
+    def unique_keys(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                fail(str(path), f"duplicate JSON key {key}")
+            result[key] = value
+        return result
     try:
-        return json.loads(path.read_text(encoding="utf-8"), parse_float=Decimal,
-                          parse_int=Decimal, parse_constant=reject_constant)
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        data = read_limited_bytes(path, "JSON").decode("utf-8-sig")
+        return json.loads(data, parse_float=parse_number, parse_int=parse_number,
+                          parse_constant=reject_constant, object_pairs_hook=unique_keys)
+    except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
         fail(str(path), f"cannot read JSON: {exc}")
 
 
 def read_csv(path):
     try:
-        with path.open(encoding="utf-8-sig", newline="") as stream:
-            reader = csv.DictReader(stream)
-            if reader.fieldnames is None:
-                fail(str(path), "missing CSV header")
-            if len(reader.fieldnames) != len(set(reader.fieldnames)):
-                fail(str(path), "duplicate CSV header")
-            for name in ROW_FIELDS:
-                if name not in reader.fieldnames:
-                    fail(str(path), f"missing CSV field {name}")
-            rows = list(reader)
-    except (OSError, UnicodeError, csv.Error) as exc:
+        data = read_limited_bytes(path, "CSV")
+        line_stream = io.BytesIO(data)
+        line_number = 0
+        while line := line_stream.readline(MAX_CSV_LINE_BYTES + 1):
+            line_number += 1
+            if line_number > MAX_PERIODS + 1:
+                fail(str(path), f"CSV physical line count exceeds {MAX_PERIODS + 1}")
+            if len(line) > MAX_CSV_LINE_BYTES:
+                fail(f"{path} line {line_number}", f"exceeds {MAX_CSV_LINE_BYTES} bytes")
+            if not line.strip():
+                fail(f"{path} line {line_number}", "blank CSV line")
+        csv.field_size_limit(MAX_CSV_LINE_BYTES)
+        reader = csv.DictReader(io.StringIO(data.decode("utf-8-sig"), newline=""), strict=True)
+        if reader.fieldnames is None:
+            fail(str(path), "missing CSV header")
+        if len(reader.fieldnames) != len(set(reader.fieldnames)):
+            fail(str(path), "duplicate CSV header")
+        missing = set(ROW_FIELDS) - set(reader.fieldnames)
+        if missing:
+            fail(str(path), f"missing CSV field {sorted(missing)[0]}")
+        extra = set(reader.fieldnames) - set(ROW_FIELDS)
+        if extra:
+            fail(str(path), f"unexpected CSV field {sorted(extra)[0]}")
+        if tuple(reader.fieldnames) != ROW_FIELDS:
+            fail(str(path), "unexpected CSV column order")
+        rows = []
+        for row in reader:
+            if len(rows) >= MAX_PERIODS:
+                fail(str(path), f"CSV row count exceeds {MAX_PERIODS}")
+            rows.append(row)
+    except (UnicodeError, csv.Error) as exc:
         fail(str(path), f"cannot read CSV: {exc}")
     for i, row in enumerate(rows):
         if None in row:
@@ -109,13 +173,18 @@ def read_csv(path):
 
 def audit(scenario_path, optimized_path, baseline_path, summary_path):
     source = read_json(scenario_path)
+    exact_fields(source, ("power_unit", "energy_unit", "price_unit", "step_hours",
+                          "grid_max_kw", "battery", "timeseries"), "scenario")
     for name, expected in (("power_unit", "kW"), ("energy_unit", "kWh"),
                            ("price_unit", "CNY/kWh")):
         if field(source, name, "scenario") != expected:
             fail("scenario", f"{name} must be {expected}")
     step = number(field(source, "step_hours", "scenario"), "scenario.step_hours", positive=True)
+    if step > MAX_STEP_HOURS:
+        fail("scenario.step_hours", f"exceeds {MAX_STEP_HOURS} hours")
     grid_max = number(field(source, "grid_max_kw", "scenario"), "scenario.grid_max_kw", minimum=0)
     battery = field(source, "battery", "scenario")
+    exact_fields(battery, BATTERY_FIELDS, "scenario.battery")
     values = {name: number(field(battery, name, "scenario.battery"),
                            f"scenario.battery.{name}", minimum=0) for name in BATTERY_FIELDS}
     if values["capacity_kwh"] <= 0:
@@ -129,9 +198,12 @@ def audit(scenario_path, optimized_path, baseline_path, summary_path):
     periods = field(source, "timeseries", "scenario")
     if not isinstance(periods, list) or not periods:
         fail("scenario.timeseries", "must be a nonempty list")
+    if len(periods) > MAX_PERIODS:
+        fail("scenario.timeseries", f"row count exceeds {MAX_PERIODS}")
     stamps = []
     for i, row in enumerate(periods):
         where = f"scenario.timeseries[{i}]"
+        exact_fields(row, INPUT_FIELDS, where)
         stamp = timestamp(field(row, "timestamp", where), where)
         if stamps:
             delta = Decimal(str((stamp - stamps[-1]).total_seconds()))
@@ -146,9 +218,11 @@ def audit(scenario_path, optimized_path, baseline_path, summary_path):
             number(field(row, name, where), f"{where}.{name}", minimum=0)
 
     summary = read_json(summary_path)
+    exact_fields(summary, ("optimized", "baseline"), "summary")
     results = {}
     for kind, path, enabled in (("optimized", optimized_path, True), ("baseline", baseline_path, False)):
         result = field(summary, kind, "summary")
+        exact_fields(result, ("status", "with_battery", "rows", *METRICS), f"summary.{kind}")
         if field(result, "status", f"summary.{kind}") != "optimal":
             fail(f"summary.{kind}.status", "must be optimal")
         if field(result, "with_battery", f"summary.{kind}") is not enabled:
@@ -157,12 +231,15 @@ def audit(scenario_path, optimized_path, baseline_path, summary_path):
         json_rows = field(result, "rows", f"summary.{kind}")
         if not isinstance(json_rows, list):
             fail(f"summary.{kind}.rows", "must be a list")
+        if len(json_rows) > MAX_PERIODS:
+            fail(f"summary.{kind}.rows", f"row count exceeds {MAX_PERIODS}")
         if len(csv_rows) != len(periods) or len(json_rows) != len(periods):
             fail(kind, f"row count mismatch: input={len(periods)}, CSV={len(csv_rows)}, summary={len(json_rows)}")
         prior = values["initial_kwh"]
         costs, energies, curtailments, grids = [], [], [], []
         for i, (source_row, csv_row, json_row, stamp) in enumerate(zip(periods, csv_rows, json_rows, stamps)):
             where = f"{kind} row {i} ({stamp.isoformat()})"
+            exact_fields(json_row, ROW_FIELDS, f"summary.{where}")
             expected_stamp = stamp.isoformat()
             if field(csv_row, "timestamp", where) != expected_stamp:
                 fail(f"{where}.timestamp", "CSV timestamp differs from input or is duplicated/out of order")

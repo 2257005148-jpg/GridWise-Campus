@@ -7,3 +7,5 @@
 未来 HTTP API、授权、版本迁移和真实数据连接均未实现。 / HTTP API, authentication, migrations and real data connections are not implemented.
 
 独立审计命令 / Independent audit command: `python tools/audit_exports.py SCENARIO.json OPTIMIZED.csv BASELINE.csv SUMMARY.json`。只依赖 Python 标准库，不构建 Pyomo 模型；校验通过退出 0，缺失、篡改或数值不合法退出 2，并将文件、方案和行号写入错误信息。 / This standard-library-only auditor exits 0 on success and 2 for missing, altered or invalid data, with location details in errors.
+
+v0.1.2 审计器对空/截断文件、非法编码、畸形 CSV、额外或重复字段、资源超限也退出 2。成功标记 `AUDIT PASSED` 只在所有四个文件全部通过后输出；失败时写入 stderr，不输出成功标记。 / Empty, malformed, extra-field or over-limit inputs exit 2. The success marker is printed only after all four files pass.

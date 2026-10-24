@@ -40,6 +40,8 @@ def _number(value, label, *, positive=False):
         raise InputError(f"{label} must be a finite number")
     if (positive and value <= 0) or (not positive and value < 0):
         raise InputError(f"{label} must be {'positive' if positive else 'nonnegative'}")
+    if value > 1_000_000_000_000:
+        raise InputError(f"{label} exceeds supported magnitude 1000000000000")
     return float(value)
 
 
@@ -48,9 +50,13 @@ def parse_scenario(data: dict) -> Scenario:
         if data["power_unit"] != "kW" or data["energy_unit"] != "kWh" or data["price_unit"] != "CNY/kWh":
             raise InputError("units must be kW, kWh, and CNY/kWh")
         step = _number(data["step_hours"], "step_hours", positive=True)
+        if step > 24:
+            raise InputError("step_hours must be at most 24")
         rows = data["timeseries"]
         if not isinstance(rows, list) or not rows:
             raise InputError("timeseries must be a nonempty list")
+        if len(rows) > 50_000:
+            raise InputError("timeseries exceeds 50000 periods")
         stamps, load, pv, price = [], [], [], []
         for i, row in enumerate(rows):
             stamp = datetime.fromisoformat(row["timestamp"])
