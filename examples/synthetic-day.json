@@ -1,0 +1,24 @@
+{
+  "power_unit": "kW",
+  "energy_unit": "kWh",
+  "price_unit": "CNY/kWh",
+  "step_hours": 1,
+  "grid_max_kw": 120,
+  "battery": {
+    "capacity_kwh": 80,
+    "initial_kwh": 40,
+    "terminal_kwh": 40,
+    "max_charge_kw": 30,
+    "max_discharge_kw": 30,
+    "charge_efficiency": 0.95,
+    "discharge_efficiency": 0.95
+  },
+  "timeseries": [
+    {"timestamp": "2026-01-01T08:00:00+08:00", "load_kw": 60, "pv_kw": 0, "price_cny_per_kwh": 0.5},
+    {"timestamp": "2026-01-01T09:00:00+08:00", "load_kw": 65, "pv_kw": 20, "price_cny_per_kwh": 0.5},
+    {"timestamp": "2026-01-01T10:00:00+08:00", "load_kw": 75, "pv_kw": 60, "price_cny_per_kwh": 0.9},
+    {"timestamp": "2026-01-01T11:00:00+08:00", "load_kw": 90, "pv_kw": 70, "price_cny_per_kwh": 1.2},
+    {"timestamp": "2026-01-01T12:00:00+08:00", "load_kw": 70, "pv_kw": 25, "price_cny_per_kwh": 1.0},
+    {"timestamp": "2026-01-01T13:00:00+08:00", "load_kw": 55, "pv_kw": 0, "price_cny_per_kwh": 0.5}
+  ]
+}
