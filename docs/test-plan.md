@@ -42,3 +42,5 @@ v0.3.0 `tests/test_dashboard.py` 使用合成 CSV 检查实际求解、独立审
 v0.3.1 增加 Windows Tk 控制层与后台流程回归：重复点击不重启任务、输入切换丢弃过期结果、关闭时取消、残缺图表不得展示成功、错误 CSV 禁用调度且原件字节不变；控制层还检验求解超时、求解失败、审计失败与临时目录清理。GUI 烟测须实际创建窗口并走有效和无效输入路径；平台范围、数量和退出码见 v0.3.1 阶段报告。 / Tk and controller tests exercise cancellation, stale-result rejection, failure gating, cleanup and a real Windows window smoke test.
 
 v0.3.2 增加四档 Tk 程序化缩放的最小窗口布局断言：图表高度、页签宽度、指标卡宽度、按钮边界和滚动可达性；双倍缩放的时间标签不得重叠。超长路径应报告失败且不崩溃，后台运行条在结束时隐藏。与 v0.3.1 异步、审计和数据层测试一起运行；真实系统显示缩放、Linux/macOS 与托管 CI 的执行状态须在阶段报告中单列。 / Layout and state regressions cover four Tk scaling factors, chart label separation, long paths, scrolling and activity feedback; platform execution claims remain evidence based.
+
+v0.3.3 增加独立子进程中的 DPI 入口检查、只读日志的 Tab 焦点顺序、Page Up/Down 页面滚动、重复质量检查保护，以及键盘触发选择文件、质量检查、运行和页签切换。验收脚本在可见 Windows Tk 窗口连续执行 20 次合成比较，并检查无效输入拦截、输入字节与临时目录状态。它是短时重复运行证据，不代表长时间耐久性。只有在真实不同 DPI 显示器上移动窗口并观察后，才能将跨显示器验证标为通过。 / The added checks exercise process DPI setup, keyboard workflow, duplicate-check protection and twenty short synthetic GUI runs. They do not establish long-duration or cross-monitor DPI behavior.

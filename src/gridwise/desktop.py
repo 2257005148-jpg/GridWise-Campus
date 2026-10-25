@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import queue
+import sys
 import threading
 from pathlib import Path
 
@@ -27,6 +28,25 @@ BLUE = "#3675A8"
 GOLD = "#B07820"
 RED = "#AF453C"
 SAMPLE = ROOT / "examples" / "synthetic-day.csv"
+
+
+def _enable_windows_dpi_awareness():
+    """Opt in before Tk creates a window, preserving an existing process policy."""
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+    user32.GetAwarenessFromDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+    user32.GetAwarenessFromDpiAwarenessContext.restype = ctypes.c_int
+    context = user32.GetThreadDpiAwarenessContext()
+    if user32.GetAwarenessFromDpiAwarenessContext(context) != 0:
+        return
+    user32.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+    user32.SetProcessDpiAwarenessContext.restype = ctypes.c_bool
+    if not user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+        raise ctypes.WinError(ctypes.get_last_error())
 
 
 CHARTS = (
@@ -58,7 +78,7 @@ def chart_values(chart: dict, specification: tuple) -> tuple:
 class EnergyDesktop:
     def __init__(self, root: tk.Tk):
         self.root = root
-        root.title("GridWise Campus v0.3.2 | 校园能源分析")
+        root.title("GridWise Campus v0.3.3 | 校园能源分析")
         root.geometry("1140x780")
         root.minsize(900, 650)
         root.configure(bg=PAPER)
@@ -81,6 +101,8 @@ class EnergyDesktop:
         self.step.trace_add("write", self._invalidate)
         self._poll_id = root.after(50, self._poll)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
+        root.bind("<Next>", self._scroll_keyboard)
+        root.bind("<Prior>", self._scroll_keyboard)
 
     def _style(self):
         style = ttk.Style(self.root)
@@ -150,7 +172,7 @@ class EnergyDesktop:
         quality_frame = ttk.Frame(outer)
         quality_frame.pack(fill="x", pady=(10, 14))
         self.quality = tk.Text(quality_frame, height=5, wrap="word", bg=WHITE, fg=INK,
-                               relief="flat", padx=12, pady=9,
+                               relief="flat", padx=12, pady=9, takefocus=1,
                                font=("Microsoft YaHei UI", 9))
         self.quality.pack(side="left", fill="x", expand=True)
         quality_scroll = ttk.Scrollbar(quality_frame, orient="vertical",
@@ -212,6 +234,12 @@ class EnergyDesktop:
     def _scroll_page(self, event):
         self._viewport.yview_scroll(-1 if event.delta > 0 else 1, "units")
 
+    def _scroll_keyboard(self, event):
+        if isinstance(event.widget, tk.Text):
+            return None  # Keep the log's own Page Up/Down navigation.
+        self._viewport.yview_scroll(1 if event.keysym == "Next" else -1, "pages")
+        return "break"
+
     def _resize_viewport(self, event):
         self._viewport.itemconfigure(self._content, width=event.width)
         text_width = max(180, event.width - 48)
@@ -271,6 +299,7 @@ class EnergyDesktop:
         self._cancel = None
         self._active_kind = None
         self.imported = None
+        self.check_button.configure(state="normal")
         self.run_button.configure(state="disabled")
         self.status.set("输入已改变，请重新检查 / Input changed; check again")
         self._clear_results()
@@ -285,6 +314,7 @@ class EnergyDesktop:
         cancel = threading.Event()
         self._cancel = cancel
         self._active_kind = kind
+        self.check_button.configure(state="disabled")
         self.progress.pack(fill="x", pady=(2, 0))
         self.progress.start(15)
 
@@ -310,6 +340,7 @@ class EnergyDesktop:
             self._stop_progress()
             self._cancel = None
             self._active_kind = None
+            self.check_button.configure(state="normal")
             try:
                 if error is not None:
                     raise error
@@ -350,6 +381,8 @@ class EnergyDesktop:
             self.path.set(selected)
 
     def _check(self):
+        if self._active_kind is not None:
+            return
         self._invalidate()
         path, step = Path(self.path.get()), self.step.get()
         self.status.set("正在检查数据 / Checking data…")
@@ -474,6 +507,7 @@ class EnergyDesktop:
 def main():
     if tk is None:
         raise RuntimeError("Tkinter is unavailable; install a Python build with Tk support")
+    _enable_windows_dpi_awareness()
     root = tk.Tk()
     EnergyDesktop(root)
     root.mainloop()

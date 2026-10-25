@@ -1,6 +1,7 @@
 """Windows Tk behavior at the user interaction boundary, using synthetic data."""
 
 import sys
+import subprocess
 import threading
 import time
 
@@ -10,6 +11,7 @@ if sys.platform != "win32":
     pytest.skip("Tk desktop interactions are verified on Windows", allow_module_level=True)
 
 import tkinter as tk
+from tkinter import ttk
 
 import gridwise.desktop as desktop
 from gridwise.dashboard import DashboardError, DashboardResult
@@ -230,3 +232,147 @@ def test_chart_time_labels_remain_separate_at_double_scaling():
         if root is not None:
             root.destroy()
         _interpreter.tk.call("tk", "scaling", original)
+
+
+def test_main_sets_dpi_awareness_before_creating_tk():
+    code = """
+import ctypes
+import gridwise.desktop as desktop
+u = ctypes.WinDLL('user32', use_last_error=True)
+u.GetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+u.GetAwarenessFromDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+u.GetAwarenessFromDpiAwarenessContext.restype = ctypes.c_int
+before = u.GetAwarenessFromDpiAwarenessContext(u.GetThreadDpiAwarenessContext())
+class Root:
+    def mainloop(self):
+        after = u.GetAwarenessFromDpiAwarenessContext(u.GetThreadDpiAwarenessContext())
+        print(before, after)
+desktop.tk.Tk = Root
+desktop.EnergyDesktop = lambda root: None
+desktop.main()
+"""
+    completed = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                               text=True, timeout=10, check=False)
+    assert completed.returncode == 0, completed.stderr
+    before, after = map(int, completed.stdout.strip().split())
+    if before == 0:
+        assert after == 2  # per-monitor awareness v1/v2
+    else:
+        assert after == before  # do not override an existing process setting
+
+
+def test_existing_dpi_awareness_is_preserved():
+    code = """
+import ctypes
+from gridwise.desktop import _enable_windows_dpi_awareness
+u = ctypes.WinDLL('user32', use_last_error=True)
+u.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+u.SetProcessDpiAwarenessContext.restype = ctypes.c_bool
+u.GetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+u.GetAwarenessFromDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+u.GetAwarenessFromDpiAwarenessContext.restype = ctypes.c_int
+assert u.SetProcessDpiAwarenessContext(ctypes.c_void_p(-2))
+before = u.GetAwarenessFromDpiAwarenessContext(u.GetThreadDpiAwarenessContext())
+_enable_windows_dpi_awareness()
+after = u.GetAwarenessFromDpiAwarenessContext(u.GetThreadDpiAwarenessContext())
+print(before, after)
+"""
+    completed = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                               text=True, timeout=10, check=False)
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "1 1"
+
+
+def test_read_only_log_is_keyboard_reachable_and_page_can_scroll():
+    root, app = new_desktop()
+    try:
+        root.geometry("900x650")
+        root.deiconify()
+        root.update()
+        widget = app.check_button
+        seen = set()
+        for _ in range(12):
+            widget = widget.tk_focusNext()
+            seen.add(str(widget))
+        assert str(app.quality) in seen
+        app.check_button.focus_set()
+        root.update()
+        before = app._viewport.yview()[0]
+        app.check_button.event_generate("<Next>")
+        root.update()
+        assert app._viewport.yview()[0] > before
+    finally:
+        root.destroy()
+
+
+def test_duplicate_quality_clicks_start_one_job(monkeypatch):
+    root, app = new_desktop()
+    release = threading.Event()
+    started = threading.Event()
+    calls = []
+    real_import = desktop.import_energy_csv
+
+    def slow_import(*args):
+        calls.append(True)
+        started.set()
+        release.wait(2)
+        return real_import(*args)
+
+    monkeypatch.setattr(desktop, "import_energy_csv", slow_import)
+    try:
+        app._check()
+        pump(root, started.is_set)
+        app._check()
+        assert len(calls) == 1
+        release.set()
+        pump(root, lambda: app._active_kind is None)
+        assert app.check_button.instate(["!disabled"])
+    finally:
+        release.set()
+        root.destroy()
+
+
+def test_keyboard_browse_check_run_and_chart_tabs(monkeypatch, tmp_path):
+    root, app = new_desktop()
+    source = tmp_path / "keyboard.csv"
+    source.write_bytes(desktop.SAMPLE.read_bytes())
+    monkeypatch.setattr(desktop.filedialog, "askopenfilename", lambda **_kwargs: str(source))
+
+    def descendants(widget):
+        for child in widget.winfo_children():
+            yield child
+            yield from descendants(child)
+
+    browse = next(widget for widget in descendants(root)
+                  if isinstance(widget, ttk.Button) and "Browse" in widget.cget("text"))
+
+    def press_space(widget):
+        widget.focus_set()
+        root.update()
+        assert root.focus_get() == widget
+        widget.event_generate("<KeyPress-space>")
+        widget.event_generate("<KeyRelease-space>")
+        root.update()
+
+    try:
+        root.deiconify()
+        root.update()
+        press_space(browse)
+        assert app.path.get() == str(source)
+        assert app.imported is None
+        press_space(app.check_button)
+        pump(root, lambda: app.imported is not None)
+        press_space(app.run_button)
+        pump(root, lambda: app._active_kind is None, seconds=15)
+        assert app.chart is not None
+        assert "AUDIT PASSED" in app.status.get()
+        app.notebook.focus_set()
+        root.update()
+        app.notebook.event_generate("<Right>")
+        root.update()
+        assert app.notebook.index("current") == 1
+        app.quality.focus_set()
+        root.update()
+        assert root.focus_get() == app.quality
+    finally:
+        root.destroy()
