@@ -6,6 +6,8 @@
 
 v0.3.6：发布过程中的普通 Python 异常也触发回滚；清理暂存目录失败时 `ExportCleanupError` 会注明发布是否完成及暂存路径。四文件发布期间的混合版本已由受控子进程实测；强制终止不能由异常回滚捕获。详情见[导出一致性设计](export-consistency-design.md)。 / Normal Python exceptions during publication also trigger rollback. `ExportCleanupError` states whether publication completed and identifies retained stage files. Controlled subprocess observation confirms mixed versions during publication; forced termination cannot be caught by exception rollback.
 
+v0.3.7 增加独立、可选入口 `python -m gridwise.run_artifacts publish SCENARIO.json RUNS_PARENT` 和 `verify RUN_DIR`；Python API 为 `publish_run()` 与 `read_verified_run()`，后者返回已校验的字节及运行元数据，拒绝未完成、损坏或非约定目录。旧 CLI 的参数及四文件输出不变。格式、限制及保证边界见[运行目录契约](run-artifact-contract.md)。 / The opt-in run-bundle CLI and Python API verify bytes before consumption; the original CLI remains unchanged.
+
 `summary.json` 含 `optimized` 与 `baseline`，各含 `status`, `with_battery`, `rows`, `total_cost_cny`, `grid_energy_kwh`, `peak_grid_kw`, `pv_curtailed_kwh`。CSV 为对应 `rows`，UTF-8 BOM 便于 Windows 表格软件读取。 / Summary has both scenarios and the listed fields; CSV uses UTF-8 BOM for Windows spreadsheet compatibility.
 
 未来 HTTP API、授权、版本迁移和真实数据连接均未实现。 / HTTP API, authentication, migrations and real data connections are not implemented.
