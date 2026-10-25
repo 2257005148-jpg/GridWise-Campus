@@ -34,3 +34,5 @@ v0.2.0 验收复核：CSV 入口为只读，质量报告与完整时序分离；
 v0.3.1：质量检查和对比调度由后台工作线程执行；线程只传结果到队列，所有 Tk 控件更新留在主线程。求解 CLI 与审计器均为可取消、限时的子进程；换输入与关闭窗口设置取消事件，过期队列结果按代次丢弃。任一环节失败即清空卡片和图表，临时目录由上下文管理器清理。 / Background workers pass results through a queue; Tk updates stay on the main thread. Cancel events and generation IDs prevent stale results, while bounded subprocesses and a temporary-directory context contain solver and audit work.
 
 v0.3.2：仅调整 Tk 呈现层。页面由可滚动视口容纳内容，图表保留可读高度；页签在宽度不足时使用短标题，完整双语标题仍在图内。指标卡按视口宽度在三、二或一列间重排。图表时间标签分行显示日期、时刻与 UTC 偏移。 / Presentation changes keep charts reachable and metric cards readable as the window or Tk font scaling changes; model, data preparation and audit remain separate.
+
+v0.3.4：桌面入口沿用 v0.3.3 的有条件 Windows DPI 感知设置；取消按钮与 Esc 仅设置后台取消事件。UI 等待后台线程及子进程结束后再恢复按钮，取消后的结果不进入图表。关闭窗口时等待当前及输入切换后尚未完成的后台任务把完成事件送回主线程，再销毁 Tk 窗口；期间不再显示结果。子进程关闭仍由 `dashboard._run_command` 的 `finally` 负责，运行文件仍由 `TemporaryDirectory` 管理。模型、数据层和审计器未变。 / Keyboard cancellation and window closing wait for current and stale worker cleanup before finishing; the optimizer, data layer and auditors are unchanged.

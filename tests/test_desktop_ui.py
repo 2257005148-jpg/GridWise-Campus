@@ -2,8 +2,10 @@
 
 import sys
 import subprocess
+import tempfile
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -178,6 +180,8 @@ def test_minimum_window_keeps_charts_and_metric_cards_usable_at_dpi_scales(facto
             assert card.winfo_width() >= card.winfo_reqwidth() - 2
         assert app.run_button.winfo_rootx() + app.run_button.winfo_width() <= (
             app._viewport.winfo_rootx() + app._viewport.winfo_width())
+        assert app.cancel_button.winfo_rootx() + app.cancel_button.winfo_width() <= (
+            app._viewport.winfo_rootx() + app._viewport.winfo_width())
         assert app._viewport.yview()[1] < 1
         app._viewport.yview_moveto(1)
         root.update()
@@ -295,6 +299,7 @@ def test_read_only_log_is_keyboard_reachable_and_page_can_scroll():
             widget = widget.tk_focusNext()
             seen.add(str(widget))
         assert str(app.quality) in seen
+        assert app.quality.tk_focusPrev() == app.run_button
         app.check_button.focus_set()
         root.update()
         before = app._viewport.yview()[0]
@@ -376,3 +381,141 @@ def test_keyboard_browse_check_run_and_chart_tabs(monkeypatch, tmp_path):
         assert root.focus_get() == app.quality
     finally:
         root.destroy()
+
+
+def test_escape_cancels_run_and_allows_keyboard_retry(monkeypatch):
+    root, app = new_desktop()
+    cancelled = threading.Event()
+    calls = []
+
+    def cancellable(_imported, **kwargs):
+        calls.append(True)
+        event = kwargs["cancel_event"]
+        if len(calls) == 1:
+            event.wait(2)
+            if event.is_set():
+                cancelled.set()
+            raise DashboardError("run cancelled")
+        raise DashboardError("synthetic retry failure")
+
+    monkeypatch.setattr(desktop, "run_comparison", cancellable)
+    try:
+        root.deiconify()
+        root.update()
+        app._run()
+        pump(root, lambda: len(calls) == 1)
+        assert app.check_button.instate(["disabled"])
+        assert app.run_button.instate(["disabled"])
+        assert app.cancel_button.instate(["!disabled"])
+        app.cancel_button.focus_set()
+        root.update()
+        assert root.focus_get() == app.cancel_button
+        app.cancel_button.event_generate("<Escape>")
+        pump(root, cancelled.is_set)
+        pump(root, lambda: app._active_kind is None)
+        assert "取消" in app.status.get() or "Cancelled" in app.status.get()
+        assert "AUDIT PASSED" not in app.status.get()
+        assert app.chart is None
+        assert app.cancel_button.instate(["disabled"])
+        assert app.check_button.instate(["!disabled"])
+        assert app.run_button.instate(["!disabled"])
+        app._run()
+        pump(root, lambda: app._active_kind is None)
+        assert len(calls) == 2
+        assert "失败" in app.status.get() or "failed" in app.status.get()
+    finally:
+        root.destroy()
+
+
+def test_cancelled_quality_check_does_not_accept_late_result(monkeypatch):
+    root, app = new_desktop()
+    release = threading.Event()
+    started = threading.Event()
+    real_import = desktop.import_energy_csv
+
+    def delayed_import(*args):
+        started.set()
+        release.wait(2)
+        return real_import(*args)
+
+    monkeypatch.setattr(desktop, "import_energy_csv", delayed_import)
+    try:
+        root.deiconify()
+        root.update()
+        app._check()
+        pump(root, started.is_set)
+        app.cancel_button.invoke()
+        assert app.cancel_button.instate(["disabled"])
+        release.set()
+        pump(root, lambda: app._active_kind is None)
+        assert app.imported is None
+        assert app.run_button.instate(["disabled"])
+        assert app.check_button.instate(["!disabled"])
+        assert "取消" in app.status.get() or "Cancelled" in app.status.get()
+        assert "AUDIT PASSED" not in app.status.get()
+    finally:
+        release.set()
+        root.destroy()
+
+
+def test_window_close_waits_for_background_temp_cleanup(monkeypatch, tmp_path):
+    root, app = new_desktop()
+    started = threading.Event()
+    release_cleanup = threading.Event()
+    finished = threading.Event()
+
+    def delayed_cleanup(_imported, **kwargs):
+        with tempfile.TemporaryDirectory(prefix="gridwise-ui-", dir=tmp_path):
+            started.set()
+            kwargs["cancel_event"].wait(2)
+            release_cleanup.wait(2)
+        finished.set()
+        raise DashboardError("cancelled")
+
+    monkeypatch.setattr(desktop, "run_comparison", delayed_cleanup)
+    try:
+        app._run()
+        pump(root, started.is_set)
+        app._on_close()
+        assert root.winfo_exists() == 1
+        assert not finished.is_set()
+        root.event_generate("<Escape>")
+        root.update()
+        assert "关闭" in app.status.get() or "Closing" in app.status.get()
+        release_cleanup.set()
+        pump(root, lambda: root.winfo_exists() == 0)
+        assert finished.is_set()
+        assert list(Path(tmp_path).glob("gridwise-ui-*")) == []
+    finally:
+        release_cleanup.set()
+        if root.winfo_exists():
+            root.destroy()
+
+
+def test_window_close_waits_for_stale_job_after_input_change(monkeypatch, tmp_path):
+    root, app = new_desktop()
+    started = threading.Event()
+    release_cleanup = threading.Event()
+
+    def delayed_cleanup(_imported, **kwargs):
+        with tempfile.TemporaryDirectory(prefix="gridwise-ui-", dir=tmp_path):
+            started.set()
+            kwargs["cancel_event"].wait(2)
+            release_cleanup.wait(2)
+        raise DashboardError("cancelled")
+
+    monkeypatch.setattr(desktop, "run_comparison", delayed_cleanup)
+    try:
+        app._run()
+        pump(root, started.is_set)
+        app.path.set(str(tmp_path / "different.csv"))
+        assert app._active_kind is None
+        app._on_close()
+        assert root.winfo_exists() == 1
+        release_cleanup.set()
+        pump(root, lambda: root.winfo_exists() == 0)
+        assert list(Path(tmp_path).glob("gridwise-ui-*")) == []
+    finally:
+        release_cleanup.set()
+        if root.winfo_exists():
+            root.destroy()

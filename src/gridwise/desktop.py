@@ -78,7 +78,7 @@ def chart_values(chart: dict, specification: tuple) -> tuple:
 class EnergyDesktop:
     def __init__(self, root: tk.Tk):
         self.root = root
-        root.title("GridWise Campus v0.3.3 | 校园能源分析")
+        root.title("GridWise Campus v0.3.4 | 校园能源分析")
         root.geometry("1140x780")
         root.minsize(900, 650)
         root.configure(bg=PAPER)
@@ -91,8 +91,11 @@ class EnergyDesktop:
         self._events = queue.Queue()
         self._generation = 0
         self._cancel = None
+        self._cancel_requested = False
         self._active_kind = None
         self._closed = False
+        self._closing = False
+        self._pending_jobs = set()
         self._cards = []
         self._card_columns = None
         self._style()
@@ -103,6 +106,7 @@ class EnergyDesktop:
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         root.bind("<Next>", self._scroll_keyboard)
         root.bind("<Prior>", self._scroll_keyboard)
+        root.bind("<Escape>", self._cancel_job)
 
     def _style(self):
         style = ttk.Style(self.root)
@@ -162,6 +166,9 @@ class EnergyDesktop:
         self.run_button = ttk.Button(actions, text="运行对比 / Run comparison",
                                      style="Run.TButton", command=self._run, state="disabled")
         self.run_button.pack(side="left", padx=10)
+        self.cancel_button = ttk.Button(actions, text="取消 / Cancel",
+                                        command=self._cancel_job, state="disabled")
+        self.cancel_button.pack(side="left")
         self.status_label = ttk.Label(actions, textvariable=self.status,
                                       style="Sub.TLabel", wraplength=450)
         self.status_label.pack(side="left", padx=12, fill="x", expand=True)
@@ -292,15 +299,19 @@ class EnergyDesktop:
             self._draw(canvas, specification)
 
     def _invalidate(self, *_):
+        if self._closing:
+            return
         if self._cancel is not None:
             self._cancel.set()
         self._stop_progress()
         self._generation += 1
         self._cancel = None
+        self._cancel_requested = False
         self._active_kind = None
         self.imported = None
         self.check_button.configure(state="normal")
         self.run_button.configure(state="disabled")
+        self.cancel_button.configure(state="disabled")
         self.status.set("输入已改变，请重新检查 / Input changed; check again")
         self._clear_results()
         self._quality_text("数据与运行日志 / Data and run log\n等待检查 / Awaiting check")
@@ -311,10 +322,14 @@ class EnergyDesktop:
     def _start_job(self, kind, operation):
         self._generation += 1
         generation = self._generation
+        self._pending_jobs.add(generation)
         cancel = threading.Event()
         self._cancel = cancel
+        self._cancel_requested = False
         self._active_kind = kind
         self.check_button.configure(state="disabled")
+        self.cancel_button.configure(state="normal")
+        self.cancel_button.focus_set()
         self.progress.pack(fill="x", pady=(2, 0))
         self.progress.start(15)
 
@@ -335,22 +350,50 @@ class EnergyDesktop:
                 generation, kind, value, error = self._events.get_nowait()
             except queue.Empty:
                 break
+            self._pending_jobs.discard(generation)
+            if self._closing:
+                if not self._pending_jobs:
+                    self._finish_close()
+                    return
+                continue
             if generation != self._generation:
                 continue
+            cancelled = self._cancel_requested
+            focus_on_cancel = self.root.focus_get() == self.cancel_button
             self._stop_progress()
             self._cancel = None
+            self._cancel_requested = False
             self._active_kind = None
             self.check_button.configure(state="normal")
-            try:
-                if error is not None:
-                    raise error
-                if kind == "quality":
-                    self._show_quality(value)
-                else:
-                    self._show_result(value)
-            except Exception as exc:
-                self._show_failure(kind, exc)
+            self.cancel_button.configure(state="disabled")
+            if cancelled:
+                self._clear_results()
+                if kind == "run" and self.imported is not None:
+                    self.run_button.configure(state="normal")
+                self.status.set("已取消 / Cancelled")
+                self._append_log("任务已取消 / Task cancelled")
+            else:
+                try:
+                    if error is not None:
+                        raise error
+                    if kind == "quality":
+                        self._show_quality(value)
+                    else:
+                        self._show_result(value)
+                except Exception as exc:
+                    self._show_failure(kind, exc)
+            if focus_on_cancel:
+                (self.run_button if kind == "run" and self.imported is not None
+                 else self.check_button).focus_set()
         self._poll_id = self.root.after(50, self._poll)
+
+    def _cancel_job(self, _event=None):
+        if self._closing or self._cancel is None or self._cancel_requested:
+            return
+        self._cancel_requested = True
+        self._cancel.set()
+        self.cancel_button.configure(state="disabled")
+        self.status.set("正在取消 / Cancelling…")
 
     def _stop_progress(self):
         self.progress.stop()
@@ -365,15 +408,28 @@ class EnergyDesktop:
         self._append_log(f"{type(error).__name__}: {error}")
 
     def _on_close(self):
-        self._closed = True
-        self._generation += 1
+        if self._closing or self._closed:
+            return
+        self._closing = True
         if self._cancel is not None:
             self._cancel.set()
+        if self._pending_jobs:
+            self.check_button.configure(state="disabled")
+            self.run_button.configure(state="disabled")
+            self.cancel_button.configure(state="disabled")
+            self.status.set("正在关闭并清理 / Closing and cleaning up…")
+            return
+        self._finish_close()
+
+    def _finish_close(self):
+        self._closed = True
         self._stop_progress()
         self.root.after_cancel(self._poll_id)
         self.root.destroy()
 
     def _choose(self):
+        if self._closing:
+            return
         selected = filedialog.askopenfilename(
             title="选择能源 CSV / Select energy CSV", filetypes=[("CSV", "*.csv"),
                                                     ("All files", "*.*")])
@@ -381,7 +437,7 @@ class EnergyDesktop:
             self.path.set(selected)
 
     def _check(self):
-        if self._active_kind is not None:
+        if self._closing or self._active_kind is not None:
             return
         self._invalidate()
         path, step = Path(self.path.get()), self.step.get()
@@ -410,6 +466,8 @@ class EnergyDesktop:
             self.status.set("质量检查未通过；调度已禁止 / Invalid input; dispatch blocked")
 
     def _run(self):
+        if self._closing:
+            return
         if self._job_running():
             return
         if self.imported is None or not self.imported.report.ready:

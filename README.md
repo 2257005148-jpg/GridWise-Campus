@@ -1,6 +1,6 @@
 # 长理智慧能源管理系统 / GridWise Campus
 
-面向高校的通用能源分析与优化项目。现有离线原型支持合成数据的纯电费调度、无储能基线、CSV 质量检查及 v0.3.2 本机交互式可视化；无学校数据接口、实时控制或认证声明。 / The offline prototype includes cost-only dispatch, a no-storage baseline, CSV quality checks and a local interactive desktop view. It has no campus connection or control claim.
+面向高校的通用能源分析与优化项目。现有离线原型支持合成数据的纯电费调度、无储能基线、CSV 质量检查及本机交互式可视化；无学校数据接口、实时控制或认证声明。 / The offline prototype includes cost-only dispatch, a no-storage baseline, CSV quality checks and a local interactive desktop view. It has no campus connection or control claim.
 
 ## 已实现 / Implemented
 
@@ -30,6 +30,8 @@ py -3.12 -m venv [LOCAL_ENV_ROOT]\gridwise-campus-py312
 桌面原型默认载入合成 CSV；也可主动选择本地 CSV 并填写小时步长。先点“检查数据”，通过后再点“运行对比”。使用合成场景的设备参数；每次交互式求解最多 96 时段，运行文件仅存于系统临时目录。检查与调度在后台执行，关闭窗口或更换输入会取消在途运行；求解和独立审计各有 120 秒上限。需要有可用的图形桌面环境。详情见[界面设计与选型](docs/v0.3-desktop-design.md)。 / The desktop uses synthetic equipment assumptions, keeps Tk responsive during checks and dispatch, cancels in-flight work on close or input change, and bounds solver and audit subprocesses to 120 seconds each. Interactive runs are capped at 96 periods.
 
 v0.3.2 为小窗口和高 DPI 字体增加页面纵向滚动、按可用宽度排列的指标卡、短页签与保留时区的两行时间标签。v0.3.3 在创建 Tk 窗口前检查 Windows 进程的 DPI 感知状态；仅在仍为 unaware 时启用每显示器感知，不覆盖已有设置。只读日志可通过 Tab 到达，在操作控件上按 Page Up/Down 可滚动页面。忙碌条只表示任务正在运行。真实跨显示器 DPI 行为仍需有不同 DPI 显示器的环境验收。 / The desktop scrolls vertically, reflows metric cards, shortens chart tabs, and retains time zones on the axis. v0.3.3 enables per-monitor DPI awareness before Tk window creation only when the process is still unaware. The read-only log is reachable by Tab, and Page Up/Down scrolls the page from action controls. Native cross-monitor behavior remains unverified.
+
+v0.3.4 增加可键盘操作的“取消 / Cancel”按钮及 Esc 快捷键。取消时保留运行中状态，待后台任务和子进程清理后恢复检查/运行按钮；关闭窗口也会等待已启动任务清理后再退出。取消结果不会显示为成功。`pyproject.toml` 的包版本仍是 `0.1.0`，v0.3.x 是内部阶段编号，不代表已发布的软件版本。项目尚无正式许可证，不能据此公开发布。 / v0.3.4 adds keyboard cancellation and waits for active worker cleanup when closing. The package metadata remains at version 0.1.0; v0.3.x labels internal development stages, not a released product. Licensing remains undecided.
 
 审计命令仅使用 Python 标准库读取原始输入和导出文件；退出码 0 为通过，2 为数据或计算校验失败。 / The audit command uses only the standard library to inspect the source and exports; exit 0 means pass, 2 means an audit failure.
 

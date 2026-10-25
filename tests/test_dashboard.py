@@ -1,6 +1,9 @@
 """Offline dashboard controller and chart selection tests."""
 
 import json
+import subprocess
+import sys
+import threading
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -100,3 +103,27 @@ def test_solver_failure_fails_closed_and_cleans_temporary_files(tmp_path, monkey
     with pytest.raises(dashboard.DashboardError, match="solver failed"):
         dashboard.run_comparison(imported, template_path)
     assert list(tmp_path.glob("gridwise-ui-*")) == []
+
+
+def test_cancelled_child_process_is_reaped():
+    cancel = threading.Event()
+    created = []
+    real_popen = subprocess.Popen
+
+    def capture(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        created.append(process)
+        return process
+
+    from unittest.mock import patch
+    with patch.object(dashboard.subprocess, "Popen", side_effect=capture):
+        timer = threading.Timer(0.2, cancel.set)
+        timer.start()
+        try:
+            with pytest.raises(dashboard.DashboardError, match="cancelled"):
+                dashboard._run_command([sys.executable, "-c", "import time; time.sleep(10)"],
+                                       timeout_seconds=5, cancel_event=cancel)
+        finally:
+            timer.cancel()
+    assert len(created) == 1
+    assert created[0].poll() is not None
