@@ -23,12 +23,12 @@ python tools/audit_history.py --ref FULL_40_HEX_SHA --schema run-v015 SCENARIO.j
 
 ## 拟议执行流程 / Proposed execution flow
 
-1. 调用者指定完整 40 位提交 SHA 与四个现存文件。所有路径只读打开；先记录 SHA-256、大小、mtime，不写回原件。 / Require a full commit ID and four existing files; record their identifiers without writing to them.
+1. 调用者指定完整 40 位提交 SHA 与四个现存文件。所有路径只读打开；先记录 SHA-256，再将每份文件复制到独立临时目录并校验快照摘要等于原摘要。历史脚本只读取快照，不写回原件。文件读取及快照各受 32 MiB 上限约束。 / Hash the four originals and create matching bounded byte snapshots; the historical auditor reads only the snapshots.
 2. 检查本地 Git 对象存在且是提交；`summary.run.git_commit` 必须等于指定提交，`source_state` 必须为 `clean`。旧 schema 若没有提交或源码状态，标为**上下文不可证**并失败；dirty、unknown、unavailable 同样失败。 / Missing commit, dirty or unknown source fails historical context attestation.
-3. 检出前拒绝历史树中的 `.gitattributes`、活跃的仓库 `info/attributes`，并要求四个必需源码/约束文件为普通 Git blob。在独立临时 Git worktree 检出该提交，验证工作树指向同一提交。检出命令仅本次使用 `-c core.autocrlf=false` 和空的 `core.attributesFile`，避免 Windows 自动 CRLF 转换或全局属性文件改变约束字节；不更改仓库配置。临时目录位于 `[LOCAL_TEMP_ROOT]`（Windows 已存在时）或系统临时目录，路径必须受专用目录约束。 / Before checkout the prototype rejects active repository attributes and nonregular required files. One-command Git settings preserve bytes without changing repository configuration.
+3. 检出前拒绝历史树中的 `.gitattributes`、活跃的仓库 `info/attributes`，并要求四个必需源码/约束文件为普通 Git blob。在独立临时 Git worktree 检出该提交，验证工作树指向同一提交。检出命令仅本次使用 `core.autocrlf=false`、空的 `core.attributesFile`、专用空 `core.hooksPath` 和 `core.fsmonitor=false`，避免换行转换、全局属性、仓库钩子及文件监视器影响；不更改仓库配置。临时目录位于 `[LOCAL_TEMP_ROOT]`（Windows 已存在时）或系统临时目录。 / Command-local Git settings disable checkout hooks and fsmonitor and preserve lock bytes.
 4. 只允许 SHA-256 为 `acb15253f3b9f0ea450e0d9dca175aa0299ba3f5a7c4d2dd2eb30eda5ee68c9a` 的已审查 v0.1.5 标准库审计器运行；Git 对象和检出脚本均核对。用当前解释器的 `-I` 隔离模式执行；先核对 Python/OS、四个运行包安装版本与历史约束文件，并读取历史 `pyproject.toml` 的直接依赖。缺失依赖或不匹配时历史算术为 `NOT_RUN`。 / Only the pinned reviewed standard-library auditor executes with Python isolation after interpreter and dependency checks.
 5. 分别报告三个独立结论：`historical_context`（源码/提交/schema/环境关联）、`current_context`（当前 HEAD、源码状态、schema、约束是否匹配）、`arithmetic_physics`（选定版本的独立算术和物理检查）。任一项的 `pass` 不推导另一项的 `pass`。 / Report historical context, current context and arithmetic/physics separately; no conclusion implies another.
-6. 再次比较四个原件的 SHA-256；若字节变化，历史上下文与算术均记 `FAIL`。正常情况下移除临时工作树；清理失败则记 `FAIL` 并保留临时路径供人工检查，绝不强制删除不明文件。 / Rehash all four original artifacts. A cleanup failure is reported and its temporary checkout is preserved for inspection.
+6. 再次比较四个原件的 SHA-256；若字节变化，历史上下文与算术均记 `FAIL`。正常情况下移除临时工作树与受控快照；清理失败则记 `FAIL` 并保留临时路径供人工检查。前后摘要只能确认两个观察点相同，不能发现中途被替换后又恢复的短暂变化；快照确保历史算术始终针对预先核对的同一组字节。 / Endpoint hashes cannot detect a transient replace-and-restore; snapshots keep the audited content stable.
 
 历史审计即使三项全通过，也只证明所提供文件与所检查版本的规则一致；Git 提交、哈希和版本号不是来源真实性或求解器实际执行的证明。 / Even all three passes do not prove authentic input or trusted solver execution.
 
@@ -45,3 +45,5 @@ python tools/audit_history.py --ref FULL_40_HEX_SHA --schema run-v015 SCENARIO.j
 | 原始四文件在审计期间变化 / artifact mutation | 整体失败，指出文件。 / Fail with file location. |
 
 v0.1.7 原型已在合成临时仓库中动态测试已知 schema、缺提交/schema、被改写的历史源码/约束/审计器、当前与历史不匹配、Git/依赖不可用、输入回显篡改、工作树创建/清理失败和原件审计期间变化。其他历史 schema、非 Windows 平台、恶意历史 Git 仓库及 wheel 来源真实性仍未验证。 / The prototype has synthetic temporary-repository tests for the listed paths. Older schemas, other platforms, malicious repositories and wheel origin are unverified.
+
+v0.1.8 安全复核 / Security review: 在受控临时仓库中验证仓库配置的 `post-checkout` 钩子不能执行；原件于快照前或历史算术期间替换时失败；历史锁文件检出字节不同时在运行脚本前失败。`--repo` 仍只允许使用已审查的本项目或受控测试仓库。Git 的本地配置、环境变量和宿主机可信性没有被此原型全面沙箱化；对不可信仓库停止使用，不把哈希检查当成安全执行许可。 / The prototype is not a general sandbox for untrusted repositories.

@@ -28,3 +28,5 @@ v0.1.4 回归覆盖完整模型源码摘要、Git 提交及 clean/dirty/unavaila
 v0.1.6 当前审计器增加旧 `run` schema 不改写的黑盒负例、缺少依赖约束文件的失败定位。历史模式的完整正反测试矩阵见[历史审计设计](historical-audit-design.md)；设计用例尚未执行，不计入 pytest 通过数。独立 Windows Python 3.12 环境安装、测试与合成审计的实际结果见 v0.1.6 阶段报告。 / New black-box tests confirm fail-closed legacy and missing-lock behavior. Historical-mode cases remain a plan, not passing tests.
 
 v0.1.7 `tests/test_audit_history.py` 只用合成场景与临时 Git 仓库测试 `run-v015` 原型：历史成功但当前上下文失败、当前成功但历史失败、缺提交/schema、改写历史审计器/模型/约束、Git attributes、来源状态不明、Git/依赖缺失、结果输入回显不符、临时工作树创建/清理失败和审计期间原件变化。所有失败路径要求显式状态与非零退出；成功路径要求四个原件字节不变、临时 worktree 已清理。具体通过/失败/跳过数量见本阶段报告。 / Synthetic temporary-repository cases exercise status, checkout safety and cleanup paths.
+
+v0.1.8 安全回归补充 / Security regressions: 临时仓库配置有可观察 `post-checkout` 钩子时不得执行；检出锁文件字节与 Git blob 不同时，历史算术不得运行；快照前及快照后原件被替换都要失败；成功路径校验四原件字节与临时工作树清理。测试仓库的依赖约束按实际安装的四个运行包生成，以避免把 Windows 观察到的传递版本误当成其他平台的锁。CI 需完整 Git 历史才能读取已审查的 v0.1.5 blob；其他平台执行状态见阶段报告。 / Tests exercise checkout safety and stable snapshots using only synthetic repositories.

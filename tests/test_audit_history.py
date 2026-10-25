@@ -4,6 +4,7 @@ import hashlib
 import json
 import subprocess
 import sys
+from importlib import metadata
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,10 @@ def historical_case(tmp_path):
         target = repo / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(blob)
+    runtime = {name: metadata.version(name) for name in ("pyomo", "highspy", "numpy", "ply")}
+    lock = repo / "requirements" / "verified-win-py312.txt"
+    lock.write_bytes("".join(f"{name}=={version}\n" for name, version in runtime.items())
+                     .encode("utf-8"))
     assert command("git", "add", "--", *PATHS, cwd=repo).returncode == 0
     assert command("git", "-c", "user.name=GridWise Test", "-c",
                    "user.email=gridwise-test@example.invalid", "commit", "-m",
@@ -49,6 +54,9 @@ def historical_case(tmp_path):
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     summary["run"]["git_commit"] = commit
     summary["run"]["source_state"] = "clean"
+    core = (repo / "src" / "gridwise" / "core.py").read_bytes().replace(b"\r\n", b"\n")
+    summary["run"]["model_version"] = "cost-mip-v1+sha256." + hashlib.sha256(core).hexdigest()
+    summary["run"]["dependency_lock_sha256"] = "sha256:" + hashlib.sha256(lock.read_bytes()).hexdigest()
     summary_path.write_text(json.dumps(summary), encoding="utf-8")
     paths = (scenario, exports / "optimized.csv", exports / "baseline.csv", summary_path)
     return repo, commit, paths, tmp_path
@@ -202,7 +210,7 @@ def test_historical_export_input_echo_mismatch_fails_arithmetic(historical_case)
 def test_context_statuses_do_not_inherit_arithmetic_failure(historical_case, monkeypatch):
     import audit_history
     repo, commit, paths, root = historical_case
-    monkeypatch.setattr(audit_history, "git_provenance", lambda: (commit, "clean"))
+    monkeypatch.setattr(audit_history, "check_current", lambda _: None)
     data = paths[1].read_bytes()
     assert b"60.0" in data
     paths[1].write_bytes(data.replace(b"60.0", b"61.0", 1))
@@ -260,6 +268,80 @@ def test_artifact_changed_during_audit_is_detected(historical_case, monkeypatch)
     assert report["artifacts_unchanged"] == "FAIL"
 
 
+def test_original_replaced_while_snapshot_is_audited_fails(historical_case, monkeypatch):
+    import audit_history
+
+    repo, commit, paths, root = historical_case
+    actual_process = audit_history.audit_process
+    original = paths[1].read_bytes()
+
+    def replace_original(script, snapshots):
+        assert snapshots[1] != paths[1]
+        assert snapshots[1].read_bytes() == original
+        paths[1].write_bytes(b"replaced during audit")
+        return actual_process(script, snapshots)
+
+    monkeypatch.setattr(audit_history, "audit_process", replace_original)
+    report = audit_history.audit_history(repo, commit, "run-v015", paths, temp_base=root)
+    assert report["historical_context"] == "FAIL"
+    assert report["arithmetic_physics"] == "FAIL"
+    assert report["artifacts_unchanged"] == "FAIL"
+    assert any("original artifact bytes changed" in item for item in report["details"])
+
+
+def test_original_changed_before_snapshot_prevents_execution(historical_case, monkeypatch):
+    import audit_history
+
+    repo, commit, paths, root = historical_case
+    actual_snapshot = audit_history.snapshot_artifacts
+
+    def change_before_copy(supplied, hashes_before, destination):
+        paths[1].write_bytes(b"replaced before snapshot")
+        return actual_snapshot(supplied, hashes_before, destination)
+
+    monkeypatch.setattr(audit_history, "snapshot_artifacts", change_before_copy)
+    report = audit_history.audit_history(repo, commit, "run-v015", paths, temp_base=root)
+    assert report["historical_context"] == "FAIL"
+    assert report["arithmetic_physics"] == "NOT_RUN"
+    assert report["artifacts_unchanged"] == "FAIL"
+    assert any("changed before stable audit snapshot" in item for item in report["details"])
+
+
+def test_checkout_ignores_repository_hook(historical_case):
+    repo, commit, paths, root = historical_case
+    marker = root / "hook-ran"
+    hooks = root / "repo-hooks"
+    hooks.mkdir()
+    hook = hooks / "post-checkout"
+    hook.write_text(f"#!/bin/sh\nprintf executed > '{marker.as_posix()}'\n", encoding="utf-8")
+    hook.chmod(0o755)
+    assert command("git", "config", "core.hooksPath", str(hooks), cwd=repo).returncode == 0
+    result, report = cli(repo, commit, paths)
+    assert result.returncode == 0, report
+    assert report["arithmetic_physics"] == "PASS"
+    assert not marker.exists()
+
+
+def test_checkout_lock_byte_mismatch_fails_before_execution(historical_case, monkeypatch):
+    import audit_history
+
+    repo, commit, paths, root = historical_case
+    actual_create = audit_history.create_worktree
+
+    def alter_checked_out_lock(repository, checkout, reference):
+        result = actual_create(repository, checkout, reference)
+        if result.returncode == 0:
+            lock = checkout / audit_history.LOCK_NAME
+            lock.write_bytes(lock.read_bytes().replace(b"\n", b"\r\n"))
+        return result
+
+    monkeypatch.setattr(audit_history, "create_worktree", alter_checked_out_lock)
+    report = audit_history.audit_history(repo, commit, "run-v015", paths, temp_base=root)
+    assert report["historical_context"] == "FAIL"
+    assert report["arithmetic_physics"] == "NOT_RUN"
+    assert any("lock bytes differ" in item for item in report["details"])
+
+
 def test_worktree_creation_failure_is_reported(historical_case, monkeypatch):
     import audit_history
     repo, commit, paths, root = historical_case
@@ -287,4 +369,7 @@ def test_worktree_cleanup_failure_is_reported_and_preserved(historical_case, mon
         for checkout in root.glob("gridwise-history-*/checkout"):
             assert checkout.resolve().is_relative_to(root.resolve())
             assert actual_remove(repo, checkout).returncode == 0
+            for snapshot in checkout.parent.glob("artifact-[0-3].*"):
+                snapshot.unlink()
+            (checkout.parent / "empty-hooks").rmdir()
             checkout.parent.rmdir()

@@ -228,8 +228,12 @@ def check_history(repo, commit, schema, paths):
 
 
 def create_worktree(repo, path, commit):
+    hooks = path.parent / "empty-hooks"
+    hooks.mkdir()
     return subprocess.run(["git", "-c", "core.autocrlf=false",
-                           "-c", f"core.attributesFile={os.devnull}", "-C", str(repo),
+                           "-c", f"core.attributesFile={os.devnull}",
+                           "-c", f"core.hooksPath={hooks}", "-c", "core.fsmonitor=false",
+                           "-C", str(repo),
                            "worktree", "add", "--detach", "--", str(path), commit],
                           capture_output=True, text=True, encoding="utf-8", errors="replace",
                           timeout=10, check=False)
@@ -247,6 +251,25 @@ def audit_process(script, paths):
 
 def short_detail(result):
     return (result.stderr or result.stdout).strip()[:500]
+
+
+def snapshot_artifacts(paths, hashes, root):
+    snapshots = []
+    for index, (source, expected) in enumerate(zip(paths, hashes, strict=True)):
+        target = root / f"artifact-{index}{source.suffix}"
+        actual = hashlib.sha256()
+        size = 0
+        with source.open("rb") as reader, target.open("xb") as writer:
+            while chunk := reader.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_FILE_BYTES:
+                    raise ContextError(f"{source}: exceeds {MAX_FILE_BYTES} bytes during snapshot")
+                actual.update(chunk)
+                writer.write(chunk)
+        if actual.hexdigest() != expected:
+            raise ContextError(f"{source}: changed before stable audit snapshot")
+        snapshots.append(target)
+    return tuple(snapshots)
 
 
 def audit_history(repo, commit, schema, paths, *, temp_base=None):
@@ -290,6 +313,7 @@ def audit_history(repo, commit, schema, paths, *, temp_base=None):
         try:
             if checkout.resolve().parent != temp_root:
                 raise ContextError("worktree path escaped temporary root")
+            snapshots = snapshot_artifacts(paths, before, temp_root)
             created = create_worktree(repo, checkout, commit)
             if created.returncode:
                 raise ContextError("worktree creation failed: " + short_detail(created))
@@ -302,7 +326,7 @@ def audit_history(repo, commit, schema, paths, *, temp_base=None):
                 raise ContextError("worktree auditor bytes differ from reviewed version")
             if (checkout / LOCK_NAME).read_bytes() != git_blob(repo, commit, LOCK_NAME):
                 raise ContextError("worktree lock bytes differ from historical Git object")
-            historical = audit_process(script, paths)
+            historical = audit_process(script, snapshots)
             answer["arithmetic_physics"] = ("PASS" if historical.returncode == 0 else
                                              "FAIL" if historical.returncode == 2 else "UNKNOWN")
             if historical.returncode:
@@ -320,14 +344,13 @@ def audit_history(repo, commit, schema, paths, *, temp_base=None):
                 if not removed_ok:
                     answer["historical_context"] = "FAIL"
                     answer["details"].append("worktree cleanup failed; preserved at " + str(checkout))
-                else:
-                    try:
-                        temp_root.rmdir()
-                    except OSError as exc:
-                        answer["historical_context"] = "FAIL"
-                        answer["details"].append(f"temporary root cleanup failed: {exc}")
-            else:
+            if not checkout.exists() or removed_ok:
                 try:
+                    for snapshot in temp_root.glob("artifact-[0-3].*"):
+                        snapshot.unlink()
+                    hooks = temp_root / "empty-hooks"
+                    if hooks.exists():
+                        hooks.rmdir()
                     temp_root.rmdir()
                 except OSError as exc:
                     answer["historical_context"] = "FAIL"
@@ -337,7 +360,8 @@ def audit_history(repo, commit, schema, paths, *, temp_base=None):
         answer["artifacts_unchanged"] = "PASS" if after == before else "FAIL"
         if after != before:
             answer["historical_context"] = "FAIL"
-            answer["arithmetic_physics"] = "FAIL"
+            if answer["arithmetic_physics"] != "NOT_RUN":
+                answer["arithmetic_physics"] = "FAIL"
             answer["details"].append("original artifact bytes changed during audit")
     except (OSError, ContextError) as exc:
         answer["artifacts_unchanged"] = "UNKNOWN"
