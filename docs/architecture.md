@@ -4,6 +4,7 @@
 
 - `core.py`: 输入契约、模型构建、求解状态、独立数值校验。 / Input contract, model, solver status, independent arithmetic check.
 - `cli.py`: 文件读写、基线运行、导出；无网络和设备命令。 / File I/O, baseline and exports; no network or device commands.
+- v0.3.5 CLI 导出边界：预检目标路径与输入别名，默认拒绝同名文件；暂存完整导出后以独占创建发布，显式覆盖时备份旧文件并在普通失败时回滚。四文件无法保证对并发读者的原子快照。 / The CLI stages a complete export set, refuses existing targets by default, and uses best-effort rollback for explicit overwrite; readers cannot assume an atomic four-file snapshot.
 - `examples/`: 合成案例；不含真实学校数据。 / Synthetic examples only.
 - `tests/`: 行为与失败模式测试。 / Behavior and failure tests.
 

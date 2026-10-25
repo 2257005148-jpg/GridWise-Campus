@@ -4,7 +4,10 @@ import argparse
 import csv
 import hashlib
 import json
+import os
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from html import escape
 
@@ -13,6 +16,76 @@ from .environment import run_environment
 
 
 MODEL_FAMILY = "cost-mip-v1"
+EXPORT_NAMES = ("summary.json", "optimized.csv", "baseline.csv", "grid-purchase.svg")
+
+
+class ExportRollbackError(OSError):
+    """A failed rollback left recovery files in the named staging directory."""
+
+
+def _check_destination(input_path: Path, output_dir: Path, overwrite: bool) -> None:
+    """Reject path aliases and unsafe targets before creating any export."""
+    for path in (output_dir, *output_dir.parents):
+        if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
+            raise OSError(f"output path is a link or junction: {path}")
+    if output_dir.exists() and not output_dir.is_dir():
+        raise OSError(f"output path is not a directory: {output_dir}")
+    for name in EXPORT_NAMES:
+        target = output_dir / name
+        if not os.path.lexists(target):
+            continue
+        if target.is_symlink() or (hasattr(target, "is_junction") and target.is_junction()):
+            raise OSError(f"export target is a link or junction: {target}")
+        if not target.is_file():
+            raise OSError(f"export target is not a regular file: {target}")
+        if os.path.samefile(input_path, target):
+            raise OSError(f"export target aliases the input file: {target}")
+        if not overwrite:
+            raise FileExistsError(f"export already exists (use --overwrite to replace): {target}")
+
+
+def _publish(stage: Path, output_dir: Path, input_path: Path, overwrite: bool) -> None:
+    """Publish staged files, retaining old bytes if a normal write fails."""
+    created = []
+    replaced = []
+    try:
+        for name in EXPORT_NAMES:
+            target = output_dir / name
+            staged = stage / name
+            if overwrite and os.path.lexists(target):
+                # Refuse a target changed between preflight and publication.
+                if target.is_symlink() or not target.is_file():
+                    raise OSError(f"export target changed during publication: {target}")
+                if os.path.samefile(input_path, target):
+                    raise OSError(f"export target aliases the input file: {target}")
+                backup = stage / f"backup-{name}"
+                os.link(target, backup)
+                if not os.path.samefile(target, backup):
+                    raise OSError(f"export target changed during publication: {target}")
+                os.replace(staged, target)
+                replaced.append((target, backup))
+            else:
+                # Atomic no-clobber creation closes the preflight/write race.
+                os.link(staged, target)
+                created.append((target, staged))
+    except OSError as original:
+        rollback_errors = []
+        for target, staged in reversed(created):
+            try:
+                if target.exists() and os.path.samefile(target, staged):
+                    target.unlink()
+            except OSError as exc:
+                rollback_errors.append(f"{target}: {exc}")
+        for target, backup in reversed(replaced):
+            try:
+                os.replace(backup, target)
+            except OSError as exc:
+                rollback_errors.append(f"{target}: {exc}")
+        if rollback_errors:
+            raise ExportRollbackError(
+                f"publication failed: {original}; rollback incomplete: "
+                f"{'; '.join(rollback_errors)}; recovery files: {stage}") from original
+        raise
 
 
 def model_version() -> str:
@@ -60,7 +133,10 @@ def _chart(results: dict) -> str:
             '<text x="270" y="305" fill="#0f766e" font-size="13">Optimized / 储能优化</text></svg>')
 
 
-def run(input_path: Path, output_dir: Path, solver_name="appsi_highs") -> dict:
+def run(input_path: Path, output_dir: Path, solver_name="appsi_highs", *, overwrite=False) -> dict:
+    input_path = Path(input_path)
+    output_dir = Path(os.path.abspath(output_dir))
+    _check_destination(input_path, output_dir, overwrite)
     source_bytes = input_path.read_bytes()
     scenario = parse_scenario(json.loads(source_bytes.decode("utf-8-sig")))
     scenario_sha256 = "sha256:" + hashlib.sha256(source_bytes).hexdigest()
@@ -71,15 +147,27 @@ def run(input_path: Path, output_dir: Path, solver_name="appsi_highs") -> dict:
                        "source_state": source_state, "scenario_sha256": scenario_sha256,
                        "solver_name": solver_name, "status": "optimal", **run_environment()},
                "optimized": optimized, "baseline": baseline}
+    _check_destination(input_path, output_dir, overwrite)
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "summary.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
-    for name in ("optimized", "baseline"):
-        result = results[name]
-        with (output_dir / f"{name}.csv").open("w", newline="", encoding="utf-8-sig") as stream:
-            writer = csv.DictWriter(stream, fieldnames=result["rows"][0].keys())
-            writer.writeheader()
-            writer.writerows(result["rows"])
-    (output_dir / "grid-purchase.svg").write_text(_chart(results), encoding="utf-8")
+    stage = Path(tempfile.mkdtemp(prefix=".gridwise-stage-", dir=output_dir))
+    preserve_stage = False
+    try:
+        (stage / "summary.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+        for name in ("optimized", "baseline"):
+            result = results[name]
+            with (stage / f"{name}.csv").open("w", newline="", encoding="utf-8-sig") as stream:
+                writer = csv.DictWriter(stream, fieldnames=result["rows"][0].keys())
+                writer.writeheader()
+                writer.writerows(result["rows"])
+        (stage / "grid-purchase.svg").write_text(_chart(results), encoding="utf-8")
+        _check_destination(input_path, output_dir, overwrite)
+        _publish(stage, output_dir, input_path, overwrite)
+    except ExportRollbackError:
+        preserve_stage = True
+        raise
+    finally:
+        if not preserve_stage:
+            shutil.rmtree(stage)
     return results
 
 
@@ -87,9 +175,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Offline microgrid dispatch / 校园微电网离线调度")
     parser.add_argument("input", type=Path, help="scenario JSON / 场景 JSON")
     parser.add_argument("output", type=Path, help="output directory / 输出目录")
+    parser.add_argument("--overwrite", action="store_true",
+                        help="replace existing export files / 显式替换已有导出文件")
     args = parser.parse_args()
     try:
-        results = run(args.input, args.output)
+        results = run(args.input, args.output, overwrite=args.overwrite)
     except (InputError, SolverError, OSError, ValueError) as exc:
         parser.exit(2, f"gridwise: {exc}\n")
     for name in ("optimized", "baseline"):

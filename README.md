@@ -27,6 +27,8 @@ py -3.12 -m venv [LOCAL_ENV_ROOT]\gridwise-campus-py312
 
 打开 `outputs/sample/grid-purchase.svg` 查看购电功率比较。输出目录已被 Git 忽略。 / Open that SVG to view grid purchase. The output directory is Git-ignored.
 
+CLI 默认拒绝覆盖输出目录中已有的四类导出文件，并以退出码 2 报告冲突。确认需要替换时显式追加 `--overwrite`。新导出先在输出目录内暂存；一般写入失败时回滚本次写入。四文件对并发读者不是原子快照，进程崩溃或不协作的外部写入仍需人工核对；请为重要运行使用独立新目录。 / The CLI refuses existing export targets by default. Add `--overwrite` only for deliberate replacement. Exports are staged before publication and ordinary write failures are rolled back; the four files are not an atomic snapshot for concurrent readers or process crashes. Use a fresh directory for important runs.
+
 桌面原型默认载入合成 CSV；也可主动选择本地 CSV 并填写小时步长。先点“检查数据”，通过后再点“运行对比”。使用合成场景的设备参数；每次交互式求解最多 96 时段，运行文件仅存于系统临时目录。检查与调度在后台执行，关闭窗口或更换输入会取消在途运行；求解和独立审计各有 120 秒上限。需要有可用的图形桌面环境。详情见[界面设计与选型](docs/v0.3-desktop-design.md)。 / The desktop uses synthetic equipment assumptions, keeps Tk responsive during checks and dispatch, cancels in-flight work on close or input change, and bounds solver and audit subprocesses to 120 seconds each. Interactive runs are capped at 96 periods.
 
 v0.3.2 为小窗口和高 DPI 字体增加页面纵向滚动、按可用宽度排列的指标卡、短页签与保留时区的两行时间标签。v0.3.3 在创建 Tk 窗口前检查 Windows 进程的 DPI 感知状态；仅在仍为 unaware 时启用每显示器感知，不覆盖已有设置。只读日志可通过 Tab 到达，在操作控件上按 Page Up/Down 可滚动页面。忙碌条只表示任务正在运行。真实跨显示器 DPI 行为仍需有不同 DPI 显示器的环境验收。 / The desktop scrolls vertically, reflows metric cards, shortens chart tabs, and retains time zones on the axis. v0.3.3 enables per-monitor DPI awareness before Tk window creation only when the process is still unaware. The read-only log is reachable by Tab, and Page Up/Down scrolls the page from action controls. Native cross-monitor behavior remains unverified.

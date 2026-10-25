@@ -1,6 +1,8 @@
 # 接口契约 / Interface contract
 
-当前仅有本地 CLI / Local CLI only: `python -m gridwise.cli INPUT.json OUTPUT_DIR`。成功退出码 0，校验或求解错误退出码 2。成功时生成 `summary.json`, `optimized.csv`, `baseline.csv`, `grid-purchase.svg`。失败时不应将新结果当作有效；若复用已有输出目录，旧文件可能仍存在，调用方应使用新目录或检查退出码。 / Exit 0 on success, 2 for validation or solve errors. On failure, do not trust preexisting files in a reused output directory.
+当前仅有本地 CLI / Local CLI only: `python -m gridwise.cli INPUT.json OUTPUT_DIR [--overwrite]`。成功退出码 0，校验、求解或文件冲突错误退出码 2。成功时生成 `summary.json`, `optimized.csv`, `baseline.csv`, `grid-purchase.svg`。默认只允许创建不存在的导出目标；任何同名目标已存在时拒绝整次运行。`--overwrite` 显式替换已有普通文件，但拒绝目录、符号链接、junction 和输入文件别名。失败时不应将旧文件当作本次新结果。 / Existing exports are refused by default; explicit overwrite accepts only regular export files and never aliases the source input.
+
+四个导出先在输出目录内暂存，暂存成功后才发布。默认模式用独占创建避免检查后被并发创建的文件遭覆盖；普通发布失败回滚本次新建文件。显式覆盖会备份旧文件并在普通替换失败时回滚。若回滚本身失败，错误会指向保留的 `.gridwise-stage-*` 恢复目录，不会删除其中的备份。跨四文件发布不具备事务原子性：并发读者可能观察到过渡状态，进程崩溃或外部不协作写入仍需人工核对；重要运行请使用唯一新目录并检查退出码和独立审计。 / Staging and best-effort rollback do not make a multi-file transaction crash safe; failed rollback retains recovery copies.
 
 `summary.json` 含 `optimized` 与 `baseline`，各含 `status`, `with_battery`, `rows`, `total_cost_cny`, `grid_energy_kwh`, `peak_grid_kw`, `pv_curtailed_kwh`。CSV 为对应 `rows`，UTF-8 BOM 便于 Windows 表格软件读取。 / Summary has both scenarios and the listed fields; CSV uses UTF-8 BOM for Windows spreadsheet compatibility.
 

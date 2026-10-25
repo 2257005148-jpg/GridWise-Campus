@@ -91,7 +91,7 @@ def test_known_schema_passes_history_and_leaves_artifacts_unchanged(historical_c
 
 def test_current_context_can_pass_while_history_fails(historical_case):
     repo, commit, paths, _ = historical_case
-    run(paths[0], paths[0].parent)
+    run(paths[0], paths[0].parent, overwrite=True)
     result, report = cli(repo, commit, paths)
     assert result.returncode == 2
     assert report["current_context"] == "PASS"

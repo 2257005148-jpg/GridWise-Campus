@@ -176,6 +176,7 @@ class EnergyDesktop:
             wraplength=max(80, event.width - 12)))
         self.progress = ttk.Progressbar(outer, mode="indeterminate")
 
+        ttk.Label(outer, text="数据质量与运行日志 / Data quality and run log").pack(anchor="w")
         quality_frame = ttk.Frame(outer)
         quality_frame.pack(fill="x", pady=(10, 14))
         self.quality = tk.Text(quality_frame, height=5, wrap="word", bg=WHITE, fg=INK,
@@ -450,9 +451,7 @@ class EnergyDesktop:
         lines = [f"ready={report.ready}  |  rows={report.row_count}  |  step={report.step_hours} h",
                  f"缺失值 / Missing: {counts}"]
         lines.extend(f"{report.source}:{item.line} [{item.field}] {item.code}: {item.detail}"
-                     for item in report.issues[:8])
-        if len(report.issues) > 8:
-            lines.append(f"另有 {len(report.issues) - 8} 项问题 / More issues")
+                     for item in report.issues)
         self._quality_text("\n".join(lines))
         if report.ready:
             self.imported = result
@@ -463,6 +462,8 @@ class EnergyDesktop:
                 self.run_button.configure(state="normal")
                 self.status.set("质量检查通过 / Quality check passed")
         else:
+            self.imported = None
+            self.run_button.configure(state="disabled")
             self.status.set("质量检查未通过；调度已禁止 / Invalid input; dispatch blocked")
 
     def _run(self):

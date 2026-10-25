@@ -46,3 +46,5 @@ v0.3.2 增加四档 Tk 程序化缩放的最小窗口布局断言：图表高度
 v0.3.3 增加独立子进程中的 DPI 入口检查、只读日志的 Tab 焦点顺序、Page Up/Down 页面滚动、重复质量检查保护，以及键盘触发选择文件、质量检查、运行和页签切换。验收脚本在可见 Windows Tk 窗口连续执行 20 次合成比较，并检查无效输入拦截、输入字节与临时目录状态。它是短时重复运行证据，不代表长时间耐久性。只有在真实不同 DPI 显示器上移动窗口并观察后，才能将跨显示器验证标为通过。 / The added checks exercise process DPI setup, keyboard workflow, duplicate-check protection and twenty short synthetic GUI runs. They do not establish long-duration or cross-monitor DPI behavior.
 
 v0.3.4 补测取消按钮/Esc、取消后重试、质量检查的迟到结果、后台子进程取消后的回收，以及窗口关闭必须等待当前/旧后台任务清理，并重跑原有数据/图表和全量测试。可见窗口烟测应覆盖有效与无效 CSV、20 次短时合成运行、原始文件 SHA-256、子进程/线程/临时目录清理；物理键盘、屏幕阅读器、双显示器原生 DPI 和长时间耐久性分别报告。 / The cancellation, close-time cleanup and existing regressions supplement the suites. Synthetic GUI smoke tests do not substitute for physical-keyboard, screen-reader, dual-monitor or long-duration acceptance.
+
+v0.3.5 CLI 定向测试须先复现默认覆盖，再检查四个目标文件各自冲突、显式覆盖、目录/链接/输入别名拒绝、并发创建冲突及中途替换失败回滚。Tk 焦点采用独立 Tk 最小探针与应用测试有限重复；任何失败记录原始堆栈，不能把重跑通过当作根因消失。质量列表超过八项时，最后一项仍应在可聚焦日志中完整可读。UI Automation 控件树、真实物理键盘与屏幕阅读器分开记录。 / CLI collision and rollback probes, isolated Tk focus loops, complete quality-list access, and separate accessibility evidence are required.

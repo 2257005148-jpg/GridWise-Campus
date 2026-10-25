@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -306,6 +307,30 @@ def test_read_only_log_is_keyboard_reachable_and_page_can_scroll():
         app.check_button.event_generate("<Next>")
         root.update()
         assert app._viewport.yview()[0] > before
+    finally:
+        root.destroy()
+
+
+def test_all_quality_issues_remain_keyboard_readable():
+    root, app = new_desktop()
+    issues = [SimpleNamespace(line=index + 2, field="load_kw", code="missing",
+                              detail=f"issue-{index:02d}") for index in range(15)]
+    report = SimpleNamespace(ready=False, row_count=15, step_hours=1,
+                             missing_counts={"load_kw": 15}, source="synthetic.csv",
+                             issues=issues)
+    try:
+        root.deiconify()
+        app._show_quality(SimpleNamespace(report=report))
+        app.quality.focus_set()
+        root.update()
+        assert root.focus_get() == app.quality
+        text = app.quality.get("1.0", "end")
+        assert "issue-00" in text and "issue-14" in text
+        assert app.run_button.instate(["disabled"])
+        app.quality.mark_set("insert", "1.0")
+        app.quality.event_generate("<Control-End>")
+        root.update()
+        assert app.quality.index("insert") != "1.0"
     finally:
         root.destroy()
 
