@@ -26,3 +26,7 @@ v0.1.9 当前模型源码不可读时，`current_context=UNKNOWN` 并保留定�
 数据层设计和开源参考比较见[方案](data-layer-visualization-plan.md)。OpenEMS、Emoncms 和 PyPSA 只作为设计参考，未安装或复制其代码。 / External projects are design references only.
 
 v0.2.0 验收复核：CSV 入口为只读，质量报告与完整时序分离；文件、行、时段、数值 token 均有上限。图表准备只消费已通过质量检查的时序及既有优化/基线汇总，不触发求解、网络或设备操作。相同场景要求逐行时间和输入回显一致，成本、购电量、峰值分别计算。 / Acceptance review confirms bounded read-only import and a separate chart-preparation path; no solver or live integration is invoked.
+
+## v0.3.0 本机界面 / Local desktop
+
+`desktop.py (Tkinter) → data.import_energy_csv → dashboard.build_scenario → cli.run (既有 Pyomo + HiGHS) → audit_exports.py (独立子进程) → data.prepare_visualization_data → Tkinter Canvas`。质量失败时不求解；独立审计失败时不绘图。临时运行文件自动清理，原始 CSV 不写入。合成设备参数沿用 `examples/synthetic-day.json`；交互式求解上限 96 时段。Tkinter 仅呈现既有指标和时序，不实现新的目标函数或指标公式。 / The desktop is an offline orchestration and presentation layer over existing validation, solver, audit and chart-preparation interfaces.

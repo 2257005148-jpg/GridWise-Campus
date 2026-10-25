@@ -36,3 +36,5 @@ v0.1.5 核验：Windows Python 3.12.14 项目环境中的运行与测试依赖�
 v0.1.6 核验：独立 Windows CPython 3.12.14 虚拟环境按快照重装，`pip check` 与完整测试通过；Pyomo 6.9.5、highspy/HiGHS API 1.15.1、NumPy 2.5.4、PLY 3.11 和六个测试依赖版本与记录相符。未收集 wheel 哈希，未运行其他平台或托管 CI，未新增项目 LICENSE。 / An isolated Windows reinstall reproduced observed versions and tests, without cross-platform or artifact-origin claims.
 
 v0.2.0 验收核验：能源 CSV 导入及图表数据准备仅用 Python 标准库，`pyproject.toml` 未新增运行依赖；本次复用已存在的独立 Windows Python 3.12.14 环境。Pyomo 6.9.5 与 highspy 1.15.1 仅供原有离线求解和集成测试。pandas、前端框架、数据库和网络服务均未引入。仓库仍无正式 `LICENSE`；既有第三方许可证梳理不能替代项目著作权人授权。 / The data layer adds no package dependency or project license grant.
+
+v0.3.0 选型：已查阅 Streamlit 官方 [包元数据](https://github.com/streamlit/streamlit/blob/develop/lib/pyproject.toml)（Apache-2.0，较大运行依赖图）与 Plotly Python 官方 [包元数据](https://github.com/plotly/plotly.py/blob/main/pyproject.toml)（MIT，核心依赖 Narwhals、packaging）；两者未安装或纳入本仓库。桌面原型使用现有 Python 3.12.14 自带 Tkinter/Tk，`pyproject.toml` 依赖不变，不新增正式 `LICENSE`。候选许可元数据不是项目发布授权。 / Tkinter was selected without a new package; the two external candidates remain uninstalled.
