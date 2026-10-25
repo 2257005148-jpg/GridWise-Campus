@@ -48,3 +48,5 @@ v0.3.3 增加独立子进程中的 DPI 入口检查、只读日志的 Tab 焦点
 v0.3.4 补测取消按钮/Esc、取消后重试、质量检查的迟到结果、后台子进程取消后的回收，以及窗口关闭必须等待当前/旧后台任务清理，并重跑原有数据/图表和全量测试。可见窗口烟测应覆盖有效与无效 CSV、20 次短时合成运行、原始文件 SHA-256、子进程/线程/临时目录清理；物理键盘、屏幕阅读器、双显示器原生 DPI 和长时间耐久性分别报告。 / The cancellation, close-time cleanup and existing regressions supplement the suites. Synthetic GUI smoke tests do not substitute for physical-keyboard, screen-reader, dual-monitor or long-duration acceptance.
 
 v0.3.5 CLI 定向测试须先复现默认覆盖，再检查四个目标文件各自冲突、显式覆盖、目录/链接/输入别名拒绝、并发创建冲突及中途替换失败回滚。Tk 焦点采用独立 Tk 最小探针与应用测试有限重复；任何失败记录原始堆栈，不能把重跑通过当作根因消失。质量列表超过八项时，最后一项仍应在可聚焦日志中完整可读。UI Automation 控件树、真实物理键盘与屏幕阅读器分开记录。 / CLI collision and rollback probes, isolated Tk focus loops, complete quality-list access, and separate accessibility evidence are required.
+
+v0.3.6 新增 CLI 故障注入（非 I/O 异常、备份创建失败、清理失败）、两个默认写入者竞争、强制终止后的混合版本观察；测试仅操作临时目录与自身创建的子进程。Tk 诊断脚本在独立子进程记录 Tcl/Tk 版本、库路径、关键 Tcl 文件、焦点遍历及异常；桌面测试关闭路径须取消定时回调。Windows UI Automation 实测、Tk 自动化、物理键盘和屏幕阅读器结果分开报告。测试通过不能推断断电恢复、多文件原子提交或既往间歇焦点问题根因已解决。 / Added fault injection and bounded isolated Tk diagnostics. Results do not establish power-loss recovery, bundle atomicity or resolution of the earlier intermittent focus issue.

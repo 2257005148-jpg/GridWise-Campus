@@ -155,3 +155,82 @@ def test_failed_rollback_retains_recovery_copy(tmp_path, monkeypatch):
     assert (stages[0] / "backup-summary.json").read_bytes() == b"summary.json"
     assert all((tmp_path / name).read_bytes() == name.encode()
                for name in NAMES if name != "summary.json")
+
+
+def test_non_oserror_during_publication_restores_old_files(tmp_path, monkeypatch):
+    import gridwise.cli as module
+
+    for name in NAMES:
+        (tmp_path / name).write_bytes(name.encode())
+    real_replace = os.replace
+    failed = False
+
+    def interrupt_second(source, target):
+        nonlocal failed
+        if Path(target).name == "optimized.csv" and not failed:
+            failed = True
+            raise RuntimeError("simulated publication interruption")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(module.os, "replace", interrupt_second)
+    with pytest.raises(RuntimeError, match="publication interruption"):
+        run(EXAMPLE, tmp_path, overwrite=True)
+    assert {name: (tmp_path / name).read_bytes() for name in NAMES} == {
+        name: name.encode() for name in NAMES}
+    assert sorted(path.name for path in tmp_path.iterdir()) == sorted(NAMES)
+
+
+def test_backup_creation_failure_restores_previous_replacements(tmp_path, monkeypatch):
+    import gridwise.cli as module
+
+    for name in NAMES:
+        (tmp_path / name).write_bytes(name.encode())
+    real_link = os.link
+
+    def fail_second_backup(source, target, *args, **kwargs):
+        if Path(target).name == "backup-optimized.csv":
+            raise OSError("simulated backup failure")
+        return real_link(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "link", fail_second_backup)
+    with pytest.raises(OSError, match="simulated backup failure"):
+        run(EXAMPLE, tmp_path, overwrite=True)
+    assert {name: (tmp_path / name).read_bytes() for name in NAMES} == {
+        name: name.encode() for name in NAMES}
+    assert sorted(path.name for path in tmp_path.iterdir()) == sorted(NAMES)
+
+
+def test_cleanup_failure_reports_published_state_and_retains_backups(tmp_path, monkeypatch):
+    import gridwise.cli as module
+
+    for name in NAMES:
+        (tmp_path / name).write_bytes(name.encode())
+
+    def fail_cleanup(_path):
+        raise OSError("simulated cleanup failure")
+
+    monkeypatch.setattr(module.shutil, "rmtree", fail_cleanup)
+    with pytest.raises(module.ExportCleanupError, match="publication completed"):
+        run(EXAMPLE, tmp_path, overwrite=True)
+    assert all((tmp_path / name).read_bytes() != name.encode() for name in NAMES)
+    stages = list(tmp_path.glob(".gridwise-stage-*"))
+    assert len(stages) == 1
+    assert (stages[0] / "backup-summary.json").read_bytes() == b"summary.json"
+
+
+def test_cleanup_failure_after_publication_error_reports_both_causes(tmp_path, monkeypatch):
+    import gridwise.cli as module
+
+    def fail_publish(*_args):
+        raise OSError("simulated publish failure")
+
+    def fail_cleanup(_path):
+        raise OSError("simulated cleanup failure")
+
+    monkeypatch.setattr(module, "_publish", fail_publish)
+    monkeypatch.setattr(module.shutil, "rmtree", fail_cleanup)
+    with pytest.raises(module.ExportCleanupError,
+                       match="publication not completed; prior error: simulated publish failure"):
+        run(EXAMPLE, tmp_path)
+    assert all(not (tmp_path / name).exists() for name in NAMES)
+    assert len(list(tmp_path.glob(".gridwise-stage-*"))) == 1

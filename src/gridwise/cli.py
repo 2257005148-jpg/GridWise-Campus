@@ -23,6 +23,10 @@ class ExportRollbackError(OSError):
     """A failed rollback left recovery files in the named staging directory."""
 
 
+class ExportCleanupError(OSError):
+    """Publication state is known, but its staging directory could not be removed."""
+
+
 def _check_destination(input_path: Path, output_dir: Path, overwrite: bool) -> None:
     """Reject path aliases and unsafe targets before creating any export."""
     for path in (output_dir, *output_dir.parents):
@@ -68,7 +72,9 @@ def _publish(stage: Path, output_dir: Path, input_path: Path, overwrite: bool) -
                 # Atomic no-clobber creation closes the preflight/write race.
                 os.link(staged, target)
                 created.append((target, staged))
-    except OSError as original:
+    except BaseException as original:
+        # Roll back even on KeyboardInterrupt or a non-I/O publishing error;
+        # process termination cannot be caught and remains a documented limit.
         rollback_errors = []
         for target, staged in reversed(created):
             try:
@@ -151,6 +157,8 @@ def run(input_path: Path, output_dir: Path, solver_name="appsi_highs", *, overwr
     output_dir.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=".gridwise-stage-", dir=output_dir))
     preserve_stage = False
+    publication_complete = False
+    primary_error = None
     try:
         (stage / "summary.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
         for name in ("optimized", "baseline"):
@@ -162,12 +170,20 @@ def run(input_path: Path, output_dir: Path, solver_name="appsi_highs", *, overwr
         (stage / "grid-purchase.svg").write_text(_chart(results), encoding="utf-8")
         _check_destination(input_path, output_dir, overwrite)
         _publish(stage, output_dir, input_path, overwrite)
-    except ExportRollbackError:
-        preserve_stage = True
+        publication_complete = True
+    except BaseException as exc:
+        primary_error = exc
+        preserve_stage = isinstance(exc, ExportRollbackError)
         raise
     finally:
         if not preserve_stage:
-            shutil.rmtree(stage)
+            try:
+                shutil.rmtree(stage)
+            except OSError as exc:
+                state = "publication completed" if publication_complete else "publication not completed"
+                prior = f"; prior error: {primary_error}" if primary_error else ""
+                raise ExportCleanupError(
+                    f"staging cleanup failed after {state}{prior}; retained files: {stage}") from exc
     return results
 
 

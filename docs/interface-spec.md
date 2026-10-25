@@ -4,6 +4,8 @@
 
 四个导出先在输出目录内暂存，暂存成功后才发布。默认模式用独占创建避免检查后被并发创建的文件遭覆盖；普通发布失败回滚本次新建文件。显式覆盖会备份旧文件并在普通替换失败时回滚。若回滚本身失败，错误会指向保留的 `.gridwise-stage-*` 恢复目录，不会删除其中的备份。跨四文件发布不具备事务原子性：并发读者可能观察到过渡状态，进程崩溃或外部不协作写入仍需人工核对；重要运行请使用唯一新目录并检查退出码和独立审计。 / Staging and best-effort rollback do not make a multi-file transaction crash safe; failed rollback retains recovery copies.
 
+v0.3.6：发布过程中的普通 Python 异常也触发回滚；清理暂存目录失败时 `ExportCleanupError` 会注明发布是否完成及暂存路径。四文件发布期间的混合版本已由受控子进程实测；强制终止不能由异常回滚捕获。详情见[导出一致性设计](export-consistency-design.md)。 / Normal Python exceptions during publication also trigger rollback. `ExportCleanupError` states whether publication completed and identifies retained stage files. Controlled subprocess observation confirms mixed versions during publication; forced termination cannot be caught by exception rollback.
+
 `summary.json` 含 `optimized` 与 `baseline`，各含 `status`, `with_battery`, `rows`, `total_cost_cny`, `grid_energy_kwh`, `peak_grid_kw`, `pv_curtailed_kwh`。CSV 为对应 `rows`，UTF-8 BOM 便于 Windows 表格软件读取。 / Summary has both scenarios and the listed fields; CSV uses UTF-8 BOM for Windows spreadsheet compatibility.
 
 未来 HTTP API、授权、版本迁移和真实数据连接均未实现。 / HTTP API, authentication, migrations and real data connections are not implemented.

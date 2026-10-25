@@ -46,6 +46,21 @@ def new_desktop():
     return root, app
 
 
+def close_desktop(root, app):
+    """Exercise the production close path so scheduled callbacks are cancelled."""
+    if root.winfo_exists():
+        app._on_close()
+        pump(root, lambda: root.winfo_exists() == 0)
+
+
+def test_close_removes_scheduled_tk_poll_callback():
+    root, app = new_desktop()
+    poll_id = app._poll_id
+    assert poll_id in root.tk.call("after", "info")
+    close_desktop(root, app)
+    assert poll_id not in root.tk.call("after", "info")
+
+
 def test_run_keeps_tk_responsive_and_rejects_duplicate_clicks(monkeypatch):
     root, app = new_desktop()
     release = threading.Event()
@@ -73,7 +88,7 @@ def test_run_keeps_tk_responsive_and_rejects_duplicate_clicks(monkeypatch):
         assert app.progress.winfo_manager() == ""
     finally:
         release.set()
-        root.destroy()
+        close_desktop(root, app)
 
 
 def test_input_change_discards_in_flight_success(monkeypatch, tmp_path):
@@ -104,7 +119,7 @@ def test_input_change_discards_in_flight_success(monkeypatch, tmp_path):
         assert "AUDIT PASSED" not in app.status.get()
     finally:
         release.set()
-        root.destroy()
+        close_desktop(root, app)
 
 
 def test_incomplete_chart_never_shows_success(monkeypatch):
@@ -119,7 +134,7 @@ def test_incomplete_chart_never_shows_success(monkeypatch):
         assert "AUDIT PASSED" not in app.status.get()
         assert "图表" in app.quality.get("1.0", "end") or "chart" in app.quality.get("1.0", "end")
     finally:
-        root.destroy()
+        close_desktop(root, app)
 
 
 def test_close_cancels_running_job(monkeypatch):
@@ -138,6 +153,7 @@ def test_close_cancels_running_job(monkeypatch):
     pump(root, app._job_running)
     app._on_close()
     assert cancelled.wait(1)
+    pump(root, lambda: root.winfo_exists() == 0)
 
 
 @pytest.mark.parametrize("payload", [
@@ -158,7 +174,7 @@ def test_invalid_csv_disables_run_and_clears_results(tmp_path, payload):
         assert app.chart is None
         assert path.read_bytes() == payload
     finally:
-        root.destroy()
+        close_desktop(root, app)
 
 
 @pytest.mark.parametrize("factor", [1.0, 1.25, 1.5, 2.0])
@@ -192,7 +208,7 @@ def test_minimum_window_keeps_charts_and_metric_cards_usable_at_dpi_scales(facto
             app._viewport.winfo_rooty())
     finally:
         if root is not None:
-            root.destroy()
+            close_desktop(root, app)
         _interpreter.tk.call("tk", "scaling", original)
 
 
@@ -207,7 +223,7 @@ def test_very_long_invalid_path_is_reported_without_crashing(tmp_path):
         assert app.run_button.instate(["disabled"])
         assert long_path in app.quality.get("1.0", "end")
     finally:
-        root.destroy()
+        close_desktop(root, app)
 
 
 def test_chart_time_labels_remain_separate_at_double_scaling():
@@ -235,7 +251,7 @@ def test_chart_time_labels_remain_separate_at_double_scaling():
         assert all(box[3] < canvas.winfo_height() - 20 for box in labels)
     finally:
         if root is not None:
-            root.destroy()
+            close_desktop(root, app)
         _interpreter.tk.call("tk", "scaling", original)
 
 
@@ -308,7 +324,7 @@ def test_read_only_log_is_keyboard_reachable_and_page_can_scroll():
         root.update()
         assert app._viewport.yview()[0] > before
     finally:
-        root.destroy()
+        close_desktop(root, app)
 
 
 def test_all_quality_issues_remain_keyboard_readable():
@@ -332,7 +348,7 @@ def test_all_quality_issues_remain_keyboard_readable():
         root.update()
         assert app.quality.index("insert") != "1.0"
     finally:
-        root.destroy()
+        close_desktop(root, app)
 
 
 def test_duplicate_quality_clicks_start_one_job(monkeypatch):
@@ -359,7 +375,7 @@ def test_duplicate_quality_clicks_start_one_job(monkeypatch):
         assert app.check_button.instate(["!disabled"])
     finally:
         release.set()
-        root.destroy()
+        close_desktop(root, app)
 
 
 def test_keyboard_browse_check_run_and_chart_tabs(monkeypatch, tmp_path):
@@ -405,7 +421,7 @@ def test_keyboard_browse_check_run_and_chart_tabs(monkeypatch, tmp_path):
         root.update()
         assert root.focus_get() == app.quality
     finally:
-        root.destroy()
+        close_desktop(root, app)
 
 
 def test_escape_cancels_run_and_allows_keyboard_retry(monkeypatch):
@@ -449,7 +465,7 @@ def test_escape_cancels_run_and_allows_keyboard_retry(monkeypatch):
         assert len(calls) == 2
         assert "失败" in app.status.get() or "failed" in app.status.get()
     finally:
-        root.destroy()
+        close_desktop(root, app)
 
 
 def test_cancelled_quality_check_does_not_accept_late_result(monkeypatch):
@@ -480,7 +496,7 @@ def test_cancelled_quality_check_does_not_accept_late_result(monkeypatch):
         assert "AUDIT PASSED" not in app.status.get()
     finally:
         release.set()
-        root.destroy()
+        close_desktop(root, app)
 
 
 def test_window_close_waits_for_background_temp_cleanup(monkeypatch, tmp_path):
@@ -514,7 +530,7 @@ def test_window_close_waits_for_background_temp_cleanup(monkeypatch, tmp_path):
     finally:
         release_cleanup.set()
         if root.winfo_exists():
-            root.destroy()
+            close_desktop(root, app)
 
 
 def test_window_close_waits_for_stale_job_after_input_change(monkeypatch, tmp_path):
@@ -543,4 +559,4 @@ def test_window_close_waits_for_stale_job_after_input_change(monkeypatch, tmp_pa
     finally:
         release_cleanup.set()
         if root.winfo_exists():
-            root.destroy()
+            close_desktop(root, app)
