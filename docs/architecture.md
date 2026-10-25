@@ -16,3 +16,5 @@
 v0.1.7 `tools/audit_history.py` 增加一个独立、只读的历史入口：先验证指定 Git 提交、`run-v015` schema、模型/约束/依赖来源；再在临时 detached worktree 中运行固定哈希的历史标准库审计器；当前上下文单独核对，不借用物理检查结果。四个输入/结果原件前后均计算 SHA-256，工作树正常退出后移除。 / The history prototype binds one schema and reviewed auditor to a detached worktree, reports three independent results, and hashes original artifacts before and after.
 
 v0.1.8 在历史入口增加四文件字节快照：历史标准库审计器读取快照，原件在审计前后重新散列；检出时以命令局部 Git 设置禁用钩子和 fsmonitor，并继续核对检出的审计器及锁文件字节。临时工作树不是恶意仓库沙箱；`--repo` 仅面向已审查项目和受控合成临时仓库。 / The historical auditor reads stable snapshots; Git checkout hooks and fsmonitor are disabled for that invocation. Arbitrary untrusted repositories remain out of scope.
+
+v0.1.9 当前模型源码不可读时，`current_context=UNKNOWN` 并保留定位信息；历史上下文通过独立预检后仍可单独执行固定摘要的历史审计器。其余安全边界与纯电费模型均不变。 / An unavailable current model source no longer aborts an otherwise independent historical audit; the current verdict remains unknown.

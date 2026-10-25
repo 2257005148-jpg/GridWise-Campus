@@ -102,7 +102,11 @@ def check_current(paths):
     commit, state = git_provenance()
     if (run["git_commit"], run["source_state"]) != (commit, state):
         raise ContextError(f"current Git context differs: HEAD={commit}, state={state}")
-    if run["model_version"] != model_version():
+    try:
+        current_model = model_version()
+    except AuditError as exc:
+        raise MissingEvidence(f"current model source unavailable: {exc}") from exc
+    if run["model_version"] != current_model:
         raise ContextError("current model source differs")
     try:
         lock = LOCK_PATH.read_bytes()

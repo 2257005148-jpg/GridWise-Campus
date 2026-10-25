@@ -47,3 +47,5 @@ python tools/audit_history.py --ref FULL_40_HEX_SHA --schema run-v015 SCENARIO.j
 v0.1.7 原型已在合成临时仓库中动态测试已知 schema、缺提交/schema、被改写的历史源码/约束/审计器、当前与历史不匹配、Git/依赖不可用、输入回显篡改、工作树创建/清理失败和原件审计期间变化。其他历史 schema、非 Windows 平台、恶意历史 Git 仓库及 wheel 来源真实性仍未验证。 / The prototype has synthetic temporary-repository tests for the listed paths. Older schemas, other platforms, malicious repositories and wheel origin are unverified.
 
 v0.1.8 安全复核 / Security review: 在受控临时仓库中验证仓库配置的 `post-checkout` 钩子不能执行；原件于快照前或历史算术期间替换时失败；历史锁文件检出字节不同时在运行脚本前失败。`--repo` 仍只允许使用已审查的本项目或受控测试仓库。Git 的本地配置、环境变量和宿主机可信性没有被此原型全面沙箱化；对不可信仓库停止使用，不把哈希检查当成安全执行许可。 / The prototype is not a general sandbox for untrusted repositories.
+
+v0.1.9 状态复核 / Status review: 当前源码不可读取时，当前上下文返回 `UNKNOWN`，并记录模型文件定位；这不是历史安全预检失败，不能据此把已独立验证的历史上下文改成失败。历史提交、schema、Git 对象、依赖、审计器摘要或检出字节未过预检时，`arithmetic_physics=NOT_RUN`；审计器已运行且结果不满足约束时为 `FAIL`。工作树清理失败即使算术曾通过，整体命令仍退出 2 并保留路径。 / A missing current source produces an independent unknown verdict; failed historical prechecks never execute the historical auditor.

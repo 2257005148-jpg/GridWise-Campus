@@ -31,3 +31,5 @@ v0.1.6 静态复核：矩阵仍为手动触发、只读仓库权限、合成数�
 v0.1.7 静态复核：工作流仍为 Ubuntu/Windows/macOS 手动合成矩阵、`contents: read`、无上传步骤；本阶段没有触发托管运行。历史审计原型另外使用 Git worktree、Python `-I` 和固定哈希的 v0.1.5 审计器，只在本机 Windows 的合成临时仓库动态验证。Linux/macOS 的历史审计行为标记为 `NOT_RUN`。 / The workflow was reviewed but not run. Historical worktree behavior was exercised only on local Windows synthetic repositories.
 
 v0.1.8 静态复核：历史测试通过 `git show` 读取已审查的 v0.1.5 提交，故 CI checkout 改为 `fetch-depth: 0`；合成临时仓库的传递依赖约束按测试解释器已安装版本生成，避免将 Windows 快照当成跨平台锁。矩阵仍仅手动触发、`contents: read`，没有上传步骤。本机 `wsl --list --quiet` 退出 1，没有可用 Linux 发行版；未启用系统功能。Ubuntu、macOS 和托管 CI 均为 **NOT_RUN**，配置修正不是运行通过。 / Full Git history is required by the historical test fixture; other-platform validation remains unexecuted.
+
+v0.1.9 再次静态审查相同手动矩阵、Python 3.12、完整 Git 历史、只读权限、合成测试及无上传步骤，未更改 CI。`wsl --list --quiet` 本机退出 1；只有 Windows 11 / CPython 3.12.14 的本地独立环境提供动态证据。Ubuntu、macOS 与托管 CI 仍为 **NOT_RUN**；Git Bash 或 YAML 检查不算 Linux/macOS 执行。 / The workflow remains unrun outside the local Windows environment.

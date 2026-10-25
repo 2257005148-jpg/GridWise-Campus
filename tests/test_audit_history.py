@@ -221,6 +221,21 @@ def test_context_statuses_do_not_inherit_arithmetic_failure(historical_case, mon
     assert report["artifacts_unchanged"] == "PASS"
 
 
+def test_unavailable_current_model_source_is_unknown_without_blocking_history(historical_case, monkeypatch):
+    import audit_history
+
+    repo, commit, paths, root = historical_case
+    monkeypatch.setattr(audit_history, "git_provenance", lambda: (commit, "clean"))
+    def unavailable_model():
+        raise audit_history.AuditError("model source: cannot read core.py")
+    monkeypatch.setattr(audit_history, "model_version", unavailable_model)
+    report = audit_history.audit_history(repo, commit, "run-v015", paths, temp_base=root)
+    assert report["current_context"] == "UNKNOWN"
+    assert report["historical_context"] == "PASS"
+    assert report["arithmetic_physics"] == "PASS"
+    assert report["artifacts_unchanged"] == "PASS"
+
+
 def test_missing_git_object_is_unknown(historical_case):
     repo, _, paths, _ = historical_case
     result, report = cli(repo, "0" * 40, paths)
