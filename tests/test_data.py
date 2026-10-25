@@ -9,7 +9,10 @@ from pathlib import Path
 import pytest
 
 from gridwise.cli import run
-from gridwise.data import DataError, import_energy_csv, prepare_visualization_data
+from gridwise.data import (
+    MAX_FILE_BYTES, MAX_LINE_BYTES, MAX_PERIODS, DataError,
+    import_energy_csv, prepare_visualization_data,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,6 +52,24 @@ def test_valid_step_intervals(tmp_path, minutes):
     assert result.report.ready and len(result.records) == 2
 
 
+def test_utf8_bom_and_input_bytes_are_preserved(tmp_path):
+    original = b"\xef\xbb\xbf" + HEADER.encode() + b"2026-01-01T00:00:00+00:00,1,0,0.5\n"
+    path = tmp_path / "bom.csv"
+    path.write_bytes(original)
+    result = import_energy_csv(path, 1)
+    assert result.report.ready and result.report.row_count == 1
+    assert path.read_bytes() == original
+
+
+def test_whitespace_missing_value_preserves_input_and_suppresses_series(tmp_path):
+    path = write_csv(tmp_path / "white.csv", ["2026-01-01T00:00:00+00:00,   ,0,0.5\n"])
+    original = path.read_bytes()
+    result = import_energy_csv(path, 1)
+    assert not result.report.ready and result.records == ()
+    assert result.report.missing_counts["load_kw"] == 1
+    assert path.read_bytes() == original
+
+
 def test_missing_values_are_counted_and_no_partial_series_is_exposed(tmp_path):
     rows = ["2026-01-01T00:00:00+00:00,,0,0.5\n",
             "2026-01-01T01:00:00+00:00,2,,\n"]
@@ -78,6 +99,8 @@ def test_invalid_header_or_units_fail(tmp_path, header, code):
     (["2026-01-01T01:00:00+00:00", "2026-01-01T00:00:00+00:00"], "out_of_order"),
     (["2026-01-01T00:00:00+00:00", "2026-01-01T02:00:00+00:00"], "time_gap"),
     (["2026-01-01T00:00:00", "2026-01-01T01:00:00"], "timestamp"),
+    (["not-a-date"], "timestamp"),
+    (["2026-01-01T00:00:00+00:00", "2026-01-01T02:00:00+02:00"], "duplicate_timestamp"),
 ])
 def test_timestamp_anomalies_fail(tmp_path, timestamps, code):
     rows = [f"{stamp},1,0,0.5\n" for stamp in timestamps]
@@ -113,6 +136,48 @@ def test_invalid_step_and_missing_file_are_reported(tmp_path):
     path = tmp_path / "missing.csv"
     assert "invalid_step" in issue_codes(import_energy_csv(path, 0))
     assert "read_error" in issue_codes(import_energy_csv(path, 1))
+    assert "invalid_step" in issue_codes(import_energy_csv(path, 25))
+
+
+def test_file_size_limit_is_enforced(tmp_path):
+    path = tmp_path / "oversize.csv"
+    with path.open("wb") as stream:
+        stream.seek(MAX_FILE_BYTES)
+        stream.write(b"x")
+    result = import_energy_csv(path, 1)
+    assert not result.report.ready and result.records == ()
+    assert "file_too_large" in issue_codes(result)
+    assert result.report.issues[0].field == "file"
+
+
+def test_physical_line_limit_is_enforced(tmp_path):
+    path = tmp_path / "long-line.csv"
+    path.write_bytes(HEADER.encode() + b"2026-01-01T00:00:00+00:00," + b"1" * MAX_LINE_BYTES + b",0,0.5\n")
+    result = import_energy_csv(path, 1)
+    assert not result.report.ready and result.records == ()
+    assert result.report.issues[0].code == "line_too_long"
+    assert result.report.issues[0].line == 2
+
+
+def test_period_limit_is_enforced(tmp_path):
+    path = tmp_path / "periods.csv"
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        stream.write(HEADER)
+        for index in range(MAX_PERIODS + 1):
+            stream.write(f"{(start + timedelta(hours=index)).isoformat()},1,0,0.5\n")
+    result = import_energy_csv(path, 1)
+    assert not result.report.ready and result.records == ()
+    assert result.report.row_count == MAX_PERIODS + 1
+    assert "too_many_periods" in issue_codes(result)
+
+
+def test_numeric_token_limit_has_field_and_line(tmp_path):
+    path = write_csv(tmp_path / "token.csv", [f"2026-01-01T00:00:00+00:00,{'1' * 129},0,0.5\n"])
+    result = import_energy_csv(path, 1)
+    assert not result.report.ready and result.records == ()
+    assert any(issue.code == "number" and issue.line == 2 and issue.field == "load_kw"
+               and "128" in issue.detail for issue in result.report.issues)
 
 
 def test_cli_reports_quality_and_exit_status(tmp_path):
@@ -168,3 +233,50 @@ def test_visualization_data_rejects_bad_import(chart_case):
     bad = import_energy_csv(SAMPLE_CSV, 0)
     with pytest.raises(DataError, match="not ready"):
         prepare_visualization_data(bad, summary)
+
+
+def test_visualization_metrics_and_units_are_exact_for_simple_case(tmp_path):
+    path = write_csv(tmp_path / "two.csv", [
+        "2026-01-01T00:00:00+00:00,4,0,0.5\n",
+        "2026-01-01T00:30:00+00:00,6,0,1\n",
+    ])
+    imported = import_energy_csv(path, 0.5)
+    stamps = [record.timestamp for record in imported.records]
+
+    def scenario(with_battery, grids, socs, cost, energy, peak):
+        return {"status": "optimal", "with_battery": with_battery,
+                "rows": [{"timestamp": stamp, "load_kw": load,
+                          "pv_available_kw": 0, "price_cny_per_kwh": price,
+                          "grid_kw": grid, "soc_kwh": soc}
+                         for stamp, load, price, grid, soc in zip(
+                             stamps, [4, 6], [0.5, 1], grids, socs, strict=True)],
+                "total_cost_cny": cost, "grid_energy_kwh": energy, "peak_grid_kw": peak}
+
+    summary = {"optimized": scenario(True, [2, 4], [3, 2], 2.5, 3, 4),
+               "baseline": scenario(False, [4, 6], [0, 0], 4, 5, 6)}
+    chart = prepare_visualization_data(imported, summary)
+    assert chart["timestamps"] == stamps
+    assert chart["step_hours"] == 0.5
+    assert chart["units"] == {"power": "kW", "energy": "kWh", "price": "CNY/kWh",
+                              "cost": "CNY", "step": "h"}
+    assert chart["series"]["optimized_period_cost_cny"] == [0.5, 2]
+    assert chart["series"]["optimized_cumulative_cost_cny"] == [0.5, 2.5]
+    assert chart["series"]["baseline_period_cost_cny"] == [1, 3]
+    assert chart["series"]["baseline_cumulative_cost_cny"] == [1, 4]
+    assert chart["metrics"] == {
+        "optimized": {"cost_cny": 2.5, "grid_energy_kwh": 3, "peak_grid_kw": 4},
+        "baseline": {"cost_cny": 4, "grid_energy_kwh": 5, "peak_grid_kw": 6},
+    }
+
+
+@pytest.mark.parametrize("kind,field,value,diagnostic", [
+    ("baseline", "pv_available_kw", 1, "pv_available_kw"),
+    ("baseline", "price_cny_per_kwh", 2, "price_cny_per_kwh"),
+    ("optimized", "timestamp", "2026-01-01T09:00:00+00:00", "timestamp"),
+])
+def test_visualization_rejects_both_scenario_alignment_errors(chart_case, kind, field,
+                                                               value, diagnostic):
+    imported, summary = chart_case
+    summary[kind]["rows"][0][field] = value
+    with pytest.raises(DataError, match=diagnostic):
+        prepare_visualization_data(imported, summary)

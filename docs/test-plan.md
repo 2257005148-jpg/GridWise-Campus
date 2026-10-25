@@ -34,3 +34,5 @@ v0.1.8 安全回归补充 / Security regressions: 临时仓库配置有可观察
 v0.1.9 增加当前模型源码不可读的合成回归：`current_context=UNKNOWN`，而历史预检和算术可独立为 `PASS`；修复前该路径抛出未处理的 `AuditError`，没有结构化状态。继续复用既有创建/清理失败、attributes、换行、原件变化和缺提交/schema 测试。最终数量见 v0.1.9 报告，不能从静态覆盖推断其他平台通过。 / A new regression confirms independent status reporting when the current source cannot be read.
 
 v0.2.0 `tests/test_data.py` 覆盖合成输入 CSV 与 JSON 一致、15/30/60 分钟步长、缺失值统计且无部分数据、错误列名/单位/顺序、重复/错序/缺口/无偏移时间、异常数值、空/截断/错误编码/空白行和缺文件，以及质量 CLI 退出码。图表准备测试从合成求解生成两方案，核对成本、购电量、峰值与 SOC 时序，并拒绝时间、输入回显或汇总篡改。最终实际数量和平台范围见 v0.2.0 阶段报告；图表准备不替代既有独立导出审计。 / Synthetic tests cover parsing, quality, series completeness, metrics and chart alignment.
+
+v0.2.0 验收补测 / Acceptance closure: 对 BOM、空白值、跨偏移同一瞬间、无效时间、32 MiB 文件、64 KiB 物理行、50,000 时段、128 字符数值 token 进行单独断言；检查导入前后字节一致和失败时无时序；用两时段手算样例精确核对逐时/累计成本、购电量、峰值、顺序及单位，并分别篡改两方案输入回显与时间戳。实际测试次数见新的验收进度报告。 / Explicit boundary and exact-metric regressions supplement the initial v0.2.0 suite.

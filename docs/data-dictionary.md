@@ -30,6 +30,8 @@ v0.1.2 离线验证资源边界 / Offline audit bounds: 单文件 ≤ 32 MiB，C
 
 图表数据的功率为 kW、SOC/购电量为 kWh、电价为 CNY/kWh、费用为 CNY；逐时电费按 `grid_kw × price_cny_per_kwh × step_hours` 计算。成本、峰值和购电量分别展示，不将电费下降称作削峰或节能。 / Chart metrics preserve distinct units and meanings.
 
+验收补充 / Acceptance detail: `grid_energy_kwh = Σ(grid_kw × step_hours)`；`peak_grid_kw = max(grid_kw)`，峰值按单时段购电功率定义。不同 UTC 偏移的时间戳按绝对瞬间判断重复与间隔；不填补缺口。导入器保留原始 CSV 字节，质量不合格时 `records` 为空。 / Peak uses period grid power, timestamps are compared as instants, and failed imports expose no partial series.
+
 v0.1.3 `summary.run.scenario_sha256` 为 `sha256:` 前缀加原始 UTF-8 输入字节的 64 位小写十六进制摘要；不规范化 BOM、换行、键顺序、数值文本或时间戳。`model_version=cost-mip-v1` 表示未改变的纯电费优化模型；`solver_name=appsi_highs`，`status=optimal`。完整来源边界见 `docs/input-provenance.md`。 / The digest covers exact source bytes; metadata identifies the unchanged cost model and configured solver, without asserting input authenticity.
 
 v0.1.4 完整 `model_version` 改为 `cost-mip-v1+sha256.<规范化 core.py 摘要>`；`cost-mip-v1` 保留为家族名。`run.git_commit` 为 40 位 HEAD 或 `unavailable`；`run.source_state` 为 `clean`、`dirty` 或 `unavailable`。Git 状态检查范围与未提交源码行为见 `docs/input-provenance.md`。 / The full version now binds to normalized model source; Git fields explicitly describe the checkout state.

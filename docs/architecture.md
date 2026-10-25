@@ -24,3 +24,5 @@ v0.1.9 当前模型源码不可读时，`current_context=UNKNOWN` 并保留定�
 新增独立路径 `合成或明确提供的 CSV → data.import_energy_csv → 质量报告 + 完整有效时序 → prepare_visualization_data(既有导出汇总) → 图表数据契约`。`data.py` 只使用标准库，既不调用 Pyomo，也不读取设备或网络。质量不通过时不给下游部分时序；图表准备要求优化与基线的时间、输入回显和三个汇总指标一致。现有 JSON→纯电费求解路径未改，CSV 导入尚不自动生成优化场景，交互式 UI 尚未实现。 / The CSV quality and chart-data path is separate from the unchanged optimizer; no live integration or UI exists.
 
 数据层设计和开源参考比较见[方案](data-layer-visualization-plan.md)。OpenEMS、Emoncms 和 PyPSA 只作为设计参考，未安装或复制其代码。 / External projects are design references only.
+
+v0.2.0 验收复核：CSV 入口为只读，质量报告与完整时序分离；文件、行、时段、数值 token 均有上限。图表准备只消费已通过质量检查的时序及既有优化/基线汇总，不触发求解、网络或设备操作。相同场景要求逐行时间和输入回显一致，成本、购电量、峰值分别计算。 / Acceptance review confirms bounded read-only import and a separate chart-preparation path; no solver or live integration is invoked.
