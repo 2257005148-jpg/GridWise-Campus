@@ -26,3 +26,5 @@ v0.1.3 增加原始字节指纹及汇总元数据回归：相同场景可复核�
 v0.1.4 回归覆盖完整模型源码摘要、Git 提交及 clean/dirty/unavailable 状态、缺失字段和旧汇总；复制并改变 `core.py` 可复现版本不匹配。性能工具对 5 类合成输入各运行 2–10 次（默认 3），记录每次端到端时间与峰值工作集，并汇总中位数、最小值、最大值。拒绝覆盖已有输出目录。测试及性能测量的实际结果以 v0.1.4 阶段报告为准。 / Regression covers source-linked versions, Git context, legacy metadata, and repeated bounded audit timing.
 
 v0.1.6 当前审计器增加旧 `run` schema 不改写的黑盒负例、缺少依赖约束文件的失败定位。历史模式的完整正反测试矩阵见[历史审计设计](historical-audit-design.md)；设计用例尚未执行，不计入 pytest 通过数。独立 Windows Python 3.12 环境安装、测试与合成审计的实际结果见 v0.1.6 阶段报告。 / New black-box tests confirm fail-closed legacy and missing-lock behavior. Historical-mode cases remain a plan, not passing tests.
+
+v0.1.7 `tests/test_audit_history.py` 只用合成场景与临时 Git 仓库测试 `run-v015` 原型：历史成功但当前上下文失败、当前成功但历史失败、缺提交/schema、改写历史审计器/模型/约束、Git attributes、来源状态不明、Git/依赖缺失、结果输入回显不符、临时工作树创建/清理失败和审计期间原件变化。所有失败路径要求显式状态与非零退出；成功路径要求四个原件字节不变、临时 worktree 已清理。具体通过/失败/跳过数量见本阶段报告。 / Synthetic temporary-repository cases exercise status, checkout safety and cleanup paths.
