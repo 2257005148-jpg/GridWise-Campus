@@ -38,3 +38,5 @@ v0.2.0 `tests/test_data.py` 覆盖合成输入 CSV 与 JSON 一致、15/30/60 �
 v0.2.0 验收补测 / Acceptance closure: 对 BOM、空白值、跨偏移同一瞬间、无效时间、32 MiB 文件、64 KiB 物理行、50,000 时段、128 字符数值 token 进行单独断言；检查导入前后字节一致和失败时无时序；用两时段手算样例精确核对逐时/累计成本、购电量、峰值、顺序及单位，并分别篡改两方案输入回显与时间戳。实际测试次数见新的验收进度报告。 / Explicit boundary and exact-metric regressions supplement the initial v0.2.0 suite.
 
 v0.3.0 `tests/test_dashboard.py` 使用合成 CSV 检查实际求解、独立审计、成本/峰值与五组图表序列；无效输入、超过 96 时段、独立审计失败都不得产生图表。Windows 图形桌面还应执行 Tk 窗口创建、质量检查、运行和 Canvas 刷新的动态烟测。完整 pytest 与既有导出审计仍须通过；具体数量与平台范围见阶段报告。 / Controller regressions and a GUI smoke check cover the local prototype; platform claims require actual execution.
+
+v0.3.1 增加 Windows Tk 控制层与后台流程回归：重复点击不重启任务、输入切换丢弃过期结果、关闭时取消、残缺图表不得展示成功、错误 CSV 禁用调度且原件字节不变；控制层还检验求解超时、求解失败、审计失败与临时目录清理。GUI 烟测须实际创建窗口并走有效和无效输入路径；平台范围、数量和退出码见 v0.3.1 阶段报告。 / Tk and controller tests exercise cancellation, stale-result rejection, failure gating, cleanup and a real Windows window smoke test.

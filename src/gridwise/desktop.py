@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import queue
+import threading
 from pathlib import Path
 
 try:
@@ -56,7 +58,7 @@ def chart_values(chart: dict, specification: tuple) -> tuple:
 class EnergyDesktop:
     def __init__(self, root: tk.Tk):
         self.root = root
-        root.title("GridWise Campus | 校园能源分析")
+        root.title("GridWise Campus v0.3.1 | 校园能源分析")
         root.geometry("1140x780")
         root.minsize(900, 650)
         root.configure(bg=PAPER)
@@ -66,10 +68,17 @@ class EnergyDesktop:
         self.imported = None
         self.chart = None
         self.chart_canvases = []
+        self._events = queue.Queue()
+        self._generation = 0
+        self._cancel = None
+        self._active_kind = None
+        self._closed = False
         self._style()
         self._layout()
         self.path.trace_add("write", self._invalidate)
         self.step.trace_add("write", self._invalidate)
+        self._poll_id = root.after(50, self._poll)
+        root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _style(self):
         style = ttk.Style(self.root)
@@ -83,6 +92,7 @@ class EnergyDesktop:
         style.configure("Metric.TLabel", font=("Microsoft YaHei UI", 17, "bold"),
                         foreground=INK)
         style.configure("TButton", padding=(13, 8), font=("Microsoft YaHei UI", 10))
+        style.configure("TEntry", padding=6)
         style.configure("Run.TButton", background=TEAL, foreground=WHITE)
         style.map("Run.TButton", background=[("active", "#06696D"),
                                                 ("disabled", "#A8B8B9")])
@@ -91,7 +101,7 @@ class EnergyDesktop:
                         font=("Microsoft YaHei UI", 9))
 
     def _layout(self):
-        outer = ttk.Frame(self.root, padding=24)
+        outer = ttk.Frame(self.root, padding=18)
         outer.pack(fill="both", expand=True)
         ttk.Label(outer, text="GridWise Campus", style="Title.TLabel").pack(anchor="w")
         ttk.Label(outer, text="校园能源调度观察台 / Offline dispatch workspace",
@@ -111,18 +121,25 @@ class EnergyDesktop:
 
         actions = ttk.Frame(outer)
         actions.pack(fill="x", pady=(12, 4))
-        ttk.Button(actions, text="检查数据 / Check data", command=self._check).pack(side="left")
+        self.check_button = ttk.Button(actions, text="检查数据 / Check data", command=self._check)
+        self.check_button.pack(side="left")
         self.run_button = ttk.Button(actions, text="运行对比 / Run comparison",
                                      style="Run.TButton", command=self._run, state="disabled")
         self.run_button.pack(side="left", padx=10)
-        ttk.Label(actions, textvariable=self.status, style="Sub.TLabel").pack(
-            side="left", padx=12)
+        ttk.Label(actions, textvariable=self.status, style="Sub.TLabel",
+                  wraplength=450).pack(side="left", padx=12, fill="x", expand=True)
 
-        self.quality = tk.Text(outer, height=5, wrap="word", bg=WHITE, fg=INK,
+        quality_frame = ttk.Frame(outer)
+        quality_frame.pack(fill="x", pady=(10, 14))
+        self.quality = tk.Text(quality_frame, height=5, wrap="word", bg=WHITE, fg=INK,
                                relief="flat", padx=12, pady=9,
                                font=("Microsoft YaHei UI", 9))
-        self.quality.pack(fill="x", pady=(10, 14))
-        self._quality_text("质量报告 / Quality report\n等待检查 / Awaiting check")
+        self.quality.pack(side="left", fill="x", expand=True)
+        quality_scroll = ttk.Scrollbar(quality_frame, orient="vertical",
+                                       command=self.quality.yview)
+        quality_scroll.pack(side="right", fill="y")
+        self.quality.configure(yscrollcommand=quality_scroll.set)
+        self._quality_text("数据与运行日志 / Data and run log\n等待检查 / Awaiting check")
 
         metric_frame = ttk.Frame(outer)
         metric_frame.pack(fill="x", pady=(0, 12))
@@ -139,10 +156,15 @@ class EnergyDesktop:
                      font=("Microsoft YaHei UI", 9)).pack(anchor="w")
             tk.Label(card, text="优化 / 基线  Optimized / Baseline", bg=WHITE,
                      fg=MUTED, font=("Microsoft YaHei UI", 8)).pack(anchor="w")
-            label = tk.Label(card, text="—", bg=WHITE, fg=INK,
-                             font=("Microsoft YaHei UI", 16, "bold"))
-            label.pack(anchor="w", pady=(6, 1))
-            self.metric_labels[key] = label
+            values = tk.Frame(card, bg=WHITE)
+            values.pack(fill="x", pady=(5, 0))
+            optimized_label = tk.Label(values, text="—", bg=WHITE, fg=TEAL,
+                                       font=("Microsoft YaHei UI", 15, "bold"))
+            optimized_label.pack(side="left", anchor="w")
+            baseline_label = tk.Label(values, text="—", bg=WHITE, fg=MUTED,
+                                      font=("Microsoft YaHei UI", 13))
+            baseline_label.pack(side="right", anchor="e")
+            self.metric_labels[key] = (optimized_label, baseline_label)
 
         self.notebook = ttk.Notebook(outer)
         self.notebook.pack(fill="both", expand=True)
@@ -164,15 +186,89 @@ class EnergyDesktop:
         self.quality.insert("1.0", message)
         self.quality.configure(state="disabled")
 
-    def _invalidate(self, *_):
-        self.imported = None
+    def _append_log(self, message):
+        self.quality.configure(state="normal")
+        self.quality.insert("end", "\n" + message)
+        self.quality.see("end")
+        self.quality.configure(state="disabled")
+
+    def _clear_results(self):
         self.chart = None
+        for pair in self.metric_labels.values():
+            for label in pair:
+                label.configure(text="—")
+        for canvas, specification in self.chart_canvases:
+            self._draw(canvas, specification)
+
+    def _invalidate(self, *_):
+        if self._cancel is not None:
+            self._cancel.set()
+        self._generation += 1
+        self._cancel = None
+        self._active_kind = None
+        self.imported = None
         self.run_button.configure(state="disabled")
         self.status.set("输入已改变，请重新检查 / Input changed; check again")
-        for label in self.metric_labels.values():
-            label.configure(text="—")
-        for canvas, spec in self.chart_canvases:
-            self._draw(canvas, spec)
+        self._clear_results()
+        self._quality_text("数据与运行日志 / Data and run log\n等待检查 / Awaiting check")
+
+    def _job_running(self):
+        return self._active_kind == "run" and self._cancel is not None
+
+    def _start_job(self, kind, operation):
+        self._generation += 1
+        generation = self._generation
+        cancel = threading.Event()
+        self._cancel = cancel
+        self._active_kind = kind
+
+        def worker():
+            try:
+                value = operation(cancel)
+                self._events.put((generation, kind, value, None))
+            except Exception as exc:
+                self._events.put((generation, kind, None, exc))
+
+        threading.Thread(target=worker, daemon=True, name=f"gridwise-{kind}").start()
+
+    def _poll(self):
+        if self._closed:
+            return
+        while True:
+            try:
+                generation, kind, value, error = self._events.get_nowait()
+            except queue.Empty:
+                break
+            if generation != self._generation:
+                continue
+            self._cancel = None
+            self._active_kind = None
+            try:
+                if error is not None:
+                    raise error
+                if kind == "quality":
+                    self._show_quality(value)
+                else:
+                    self._show_result(value)
+            except Exception as exc:
+                self._show_failure(kind, exc)
+        self._poll_id = self.root.after(50, self._poll)
+
+    def _show_failure(self, kind, error):
+        self._clear_results()
+        if kind == "run" and self.imported is not None:
+            self.run_button.configure(state="normal")
+        self.status.set("运行失败；详见日志 / Run failed; see log" if kind == "run"
+                        else "检查失败；详见日志 / Check failed; see log")
+        self._append_log(f"{type(error).__name__}: {error}")
+
+    def _on_close(self):
+        self._closed = True
+        self._generation += 1
+        if self._cancel is not None:
+            self._cancel.set()
+        self.root.after_cancel(self._poll_id)
+        self.root.destroy()
 
     def _choose(self):
         selected = filedialog.askopenfilename(
@@ -183,7 +279,11 @@ class EnergyDesktop:
 
     def _check(self):
         self._invalidate()
-        result = import_energy_csv(Path(self.path.get()), self.step.get())
+        path, step = Path(self.path.get()), self.step.get()
+        self.status.set("正在检查数据 / Checking data…")
+        self._start_job("quality", lambda _cancel: import_energy_csv(path, step))
+
+    def _show_quality(self, result):
         report = result.report
         counts = ", ".join(f"{key}: {value}" for key, value in report.missing_counts.items())
         lines = [f"ready={report.ready}  |  rows={report.row_count}  |  step={report.step_hours} h",
@@ -205,32 +305,39 @@ class EnergyDesktop:
             self.status.set("质量检查未通过；调度已禁止 / Invalid input; dispatch blocked")
 
     def _run(self):
+        if self._job_running():
+            return
         if self.imported is None or not self.imported.report.ready:
             self.status.set("请先通过质量检查 / Check data first")
             return
+        if len(self.imported.records) > MAX_INTERACTIVE_PERIODS:
+            self.status.set("超过交互式时段上限 / Interactive period limit exceeded")
+            return
+        imported = self.imported
+        self._clear_results()
         self.run_button.configure(state="disabled")
         self.status.set("正在计算与审计 / Solving and auditing…")
-        self.root.update_idletasks()
+        self._start_job("run", lambda cancel: run_comparison(imported, cancel_event=cancel))
+
+    def _show_result(self, result):
         try:
-            result = run_comparison(self.imported)
-        except DashboardError as exc:
-            self.chart = None
-            for label in self.metric_labels.values():
-                label.configure(text="—")
-            for canvas, spec in self.chart_canvases:
-                self._draw(canvas, spec)
-            self.status.set(f"无法显示结果 / No result: {exc}")
-            return
-        finally:
-            self.run_button.configure(state="normal")
+            for specification in CHARTS:
+                chart_values(result.chart, specification)
+            for key in self.metric_labels:
+                for kind in ("optimized", "baseline"):
+                    float(result.chart["metrics"][kind][key])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise DashboardError(f"图表数据无效 / Invalid chart data: {exc}") from exc
         self.chart = result.chart
         self.status.set(result.audit_message)
-        for key, label in self.metric_labels.items():
+        for key, pair in self.metric_labels.items():
             optimized = self.chart["metrics"]["optimized"][key]
             baseline = self.chart["metrics"]["baseline"][key]
-            label.configure(text=f"{optimized:,.2f}  /  {baseline:,.2f}")
+            pair[0].configure(text=f"{optimized:,.2f}")
+            pair[1].configure(text=f"{baseline:,.2f}")
         for canvas, spec in self.chart_canvases:
             self._draw(canvas, spec)
+        self.run_button.configure(state="normal")
 
     def _draw(self, canvas, specification):
         canvas.delete("all")
@@ -252,7 +359,8 @@ class EnergyDesktop:
         for index in range(5):
             y = bottom - (bottom - top) * index / 4
             canvas.create_line(left, y, right, y, fill="#E4EBEF")
-            canvas.create_text(left - 8, y, text=f"{maximum * index / 4:.0f}",
+            tick = maximum * index / 4
+            canvas.create_text(left - 8, y, text=f"{tick:.2f}" if maximum < 10 else f"{tick:.0f}",
                                anchor="e", fill=MUTED, font=("Segoe UI", 9))
         span = max(1, len(stamps) - 1)
         for label, color, values in series:
@@ -271,11 +379,12 @@ class EnergyDesktop:
                                anchor="w" if index == 0 else "e" if index == len(stamps) - 1
                                else "center", fill=MUTED, font=("Segoe UI", 9))
         x = left
+        legend_spacing = max(125, min(190, (right - left) // max(1, len(series))))
         for label, color, _ in series:
             canvas.create_line(x, height - 18, x + 20, height - 18, fill=color, width=3)
             canvas.create_text(x + 26, height - 18, text=label, anchor="w", fill=INK,
                                font=("Microsoft YaHei UI", 9))
-            x += 190
+            x += legend_spacing
 
 
 def main():

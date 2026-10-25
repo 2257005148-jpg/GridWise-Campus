@@ -23,3 +23,5 @@ v0.2.0 新增只读质量命令 `python -m gridwise.data INPUT.csv --step-hours 
 图表 API 以输入 CSV 的 `step_hours` 重算两方案逐时费用、累计费用、购电量与峰值，要求汇总指标在绝对容差 `1e-5` 内相符。时间戳文本必须逐行一致；输入负荷、可用光伏、电价需回显一致。不合格输入抛 `DataError`，没有部分图表输出。/ The chart API recalculates both scenarios from aligned input and raises `DataError` on any quality or alignment failure; it does not return partial chart data.
 
 v0.3.0 本机入口 `python -m gridwise.desktop`。`dashboard.build_scenario(imported)` 要求 `ready=true`、非空且 ≤96 时段，以既有合成模板提供设备参数；`dashboard.run_comparison(imported)` 在临时目录求解两方案、独立审计并返回 `DashboardResult(chart, audit_message)`。任何质量、求解、审计或对齐失败均不返回图表并明确报错。原始 CSV 不自动修改或保存为结果。 / The desktop entry point accepts a validated series and returns chart data only after an audited comparison.
+
+v0.3.1 `run_comparison` 增加仅供调用方控制的 `cancel_event`、`solve_timeout_seconds`、`audit_timeout_seconds` 可选关键字参数，默认各 120 秒。取消、超时或非零退出抛 `DashboardError`；未取得独立审计成功标记或图表数据不完整时，UI 不显示成功。界面工作线程不得直接访问 Tk 控件。 / Optional cancellation and subprocess timeouts bound interactive runs; failures leave no successful chart state, and all Tk updates occur on the main thread.

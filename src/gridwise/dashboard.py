@@ -4,11 +4,11 @@ import json
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .cli import run
-from .core import InputError, SolverError
 from .data import DataError, ImportResult, prepare_visualization_data
 
 
@@ -26,6 +26,32 @@ class DashboardError(RuntimeError):
 class DashboardResult:
     chart: dict
     audit_message: str
+
+
+def _run_command(args, timeout_seconds, cancel_event):
+    """Bound a child process and stop it when the desktop closes or input changes."""
+    if cancel_event.is_set():
+        raise DashboardError("run cancelled")
+    process = subprocess.Popen(args, cwd=ROOT, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                               errors="replace")
+    started = time.monotonic()
+    try:
+        while True:
+            if cancel_event.is_set():
+                raise DashboardError("run cancelled")
+            remaining = timeout_seconds - (time.monotonic() - started)
+            if remaining <= 0:
+                raise DashboardError(f"process timed out after {timeout_seconds:g} s")
+            try:
+                stdout, stderr = process.communicate(timeout=min(0.1, remaining))
+                return process.returncode, stdout, stderr
+            except subprocess.TimeoutExpired:
+                continue
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
 
 
 def build_scenario(imported: ImportResult, template_path: Path = SYNTHETIC_TEMPLATE) -> dict:
@@ -52,9 +78,15 @@ def build_scenario(imported: ImportResult, template_path: Path = SYNTHETIC_TEMPL
         raise DashboardError(f"synthetic equipment template unavailable: {exc}") from exc
 
 
-def run_comparison(imported: ImportResult, template_path: Path = SYNTHETIC_TEMPLATE) -> DashboardResult:
+def run_comparison(imported: ImportResult, template_path: Path = SYNTHETIC_TEMPLATE,
+                   *, cancel_event: threading.Event | None = None,
+                   solve_timeout_seconds: float = 120,
+                   audit_timeout_seconds: float = 120) -> DashboardResult:
     """Run both existing scenarios, independently audit exports, then prepare charts."""
     scenario = build_scenario(imported, template_path)
+    cancel_event = cancel_event or threading.Event()
+    if solve_timeout_seconds <= 0 or audit_timeout_seconds <= 0:
+        raise DashboardError("process timeouts must be positive")
     try:
         with tempfile.TemporaryDirectory(prefix="gridwise-ui-") as temporary:
             root = Path(temporary)
@@ -62,19 +94,23 @@ def run_comparison(imported: ImportResult, template_path: Path = SYNTHETIC_TEMPL
             exports = root / "exports"
             source.write_text(json.dumps(scenario, ensure_ascii=False, allow_nan=False),
                               encoding="utf-8")
-            summary = run(source, exports)
-            audit = subprocess.run(
+            code, stdout, stderr = _run_command(
+                [sys.executable, "-m", "gridwise.cli", str(source), str(exports)],
+                solve_timeout_seconds, cancel_event)
+            if code != 0:
+                raise DashboardError(f"solver failed (exit {code}): {(stderr or stdout).strip()}")
+            summary = json.loads((exports / "summary.json").read_text(encoding="utf-8"))
+            code, stdout, stderr = _run_command(
                 [sys.executable, str(AUDITOR), str(source),
                  str(exports / "optimized.csv"), str(exports / "baseline.csv"),
                  str(exports / "summary.json")],
-                capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=120, check=False,
-            )
-            if audit.returncode != 0 or "AUDIT PASSED" not in audit.stdout:
-                detail = (audit.stderr or audit.stdout).strip()
+                audit_timeout_seconds, cancel_event)
+            if code != 0 or "AUDIT PASSED" not in stdout:
+                detail = (stderr or stdout).strip()
                 raise DashboardError(f"independent export audit failed: {detail}")
+            if cancel_event.is_set():
+                raise DashboardError("run cancelled")
             chart = prepare_visualization_data(imported, summary)
             return DashboardResult(chart, "AUDIT PASSED / 独立审计通过")
-    except (InputError, SolverError, DataError, OSError, ValueError,
-            subprocess.TimeoutExpired) as exc:
+    except (DataError, OSError, ValueError) as exc:
         raise DashboardError(f"comparison unavailable: {exc}") from exc
