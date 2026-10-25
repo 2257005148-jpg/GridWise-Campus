@@ -33,14 +33,14 @@ def pump(root, condition, seconds=3):
     pytest.fail("Tk did not reach the expected state")
 
 
-def new_desktop():
+def new_desktop(*, runs_root=None):
     global _interpreter
     if _interpreter is None:
         _interpreter = tk.Tk()
         _interpreter.withdraw()
     root = tk.Toplevel(_interpreter)
     root.withdraw()
-    app = desktop.EnergyDesktop(root)
+    app = desktop.EnergyDesktop(root, runs_root=runs_root)
     app._check()
     pump(root, lambda: app.imported is not None)
     return root, app
@@ -316,13 +316,86 @@ def test_read_only_log_is_keyboard_reachable_and_page_can_scroll():
             widget = widget.tk_focusNext()
             seen.add(str(widget))
         assert str(app.quality) in seen
-        assert app.quality.tk_focusPrev() == app.run_button
+        assert str(app.run_button) in seen
+        assert str(app.history_combo) in seen
+        assert app.quality.tk_focusPrev() == app.history_combo
         app.check_button.focus_set()
         root.update()
         before = app._viewport.yview()[0]
         app.check_button.event_generate("<Next>")
         root.update()
         assert app._viewport.yview()[0] > before
+    finally:
+        close_desktop(root, app)
+
+
+def test_verified_desktop_run_history_and_damaged_result(tmp_path):
+    root, app = new_desktop(runs_root=tmp_path / "runs")
+    try:
+        app._run()
+        pump(root, lambda: app.chart is not None or app._active_kind is None, seconds=25)
+        assert app.chart is not None, app.status.get() + app.quality.get("1.0", "end")
+        name = app.selected_run.get().split(" [", 1)[0]
+        assert name.startswith("run-")
+        assert "VERIFIED" in app.status.get()
+        assert (tmp_path / "runs" / name / "COMPLETE").exists()
+
+        app._refresh_history()
+        pump(root, lambda: app._active_kind is None, seconds=10)
+        assert name in app._history_entries
+        assert app._history_entries[name].status == "VALID"
+        app.selected_run.set(f"{name} [VALID]")
+        app._load_history()
+        pump(root, lambda: app._active_kind is None, seconds=10)
+        assert app.chart is not None
+
+        target = tmp_path / "runs" / name / "optimized.csv"
+        target.write_bytes(target.read_bytes() + b"damage")
+        app._refresh_history()
+        pump(root, lambda: app._active_kind is None, seconds=10)
+        assert app._history_entries[name].status == "DAMAGED"
+        app.selected_run.set(f"{name} [DAMAGED]")
+        app._load_history()
+        pump(root, lambda: app._active_kind is None, seconds=10)
+        assert app.chart is None
+        assert "失败" in app.status.get()
+    finally:
+        close_desktop(root, app)
+
+
+def test_verified_desktop_two_runs_and_input_change(tmp_path):
+    root, app = new_desktop(runs_root=tmp_path / "runs")
+    try:
+        names = []
+        for _ in range(2):
+            app._run()
+            pump(root, lambda: app._active_kind is None, seconds=25)
+            assert app.chart is not None, app.quality.get("1.0", "end")
+            names.append(app.selected_run.get().split(" [", 1)[0])
+        assert names[0] != names[1]
+        assert len(list((tmp_path / "runs").glob("run-*"))) == 2
+        app.path.set(str(tmp_path / "other.csv"))
+        assert app.chart is None
+        assert app.imported is None
+        assert app.load_button.instate(["disabled"])
+    finally:
+        close_desktop(root, app)
+
+
+def test_desktop_audit_failure_never_displays_success(tmp_path, monkeypatch):
+    from gridwise import run_artifacts
+
+    root, app = new_desktop(runs_root=tmp_path / "runs")
+    monkeypatch.setattr(run_artifacts, "AUDITOR", tmp_path / "missing-auditor.py")
+    try:
+        app._run()
+        pump(root, lambda: app._active_kind is None, seconds=25)
+        assert app.chart is None
+        assert "失败" in app.status.get()
+        assert "AUDIT PASSED" not in app.status.get()
+        runs = list((tmp_path / "runs").glob("run-*"))
+        assert len(runs) == 1
+        assert not (runs[0] / "COMPLETE").exists()
     finally:
         close_desktop(root, app)
 

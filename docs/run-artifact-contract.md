@@ -53,6 +53,8 @@ COMPLETE
 - 对同一目录的并发安全读取返回各自校验过的字节。若其他进程能在校验后改写整个目录和清单，哈希不能证明来源真实性，且无法完全消除路径替换竞态。 / Concurrent readers get verified bytes; a writer able to forge the manifest and marker defeats provenance claims. Some filesystem races remain.
 - 未实现数字签名、目录级持久化同步、断电恢复或抗恶意本机写入者的保证。完成标记的 `fsync` 不等于五个文件和父目录已在断电后持久化。 / No signature, directory durability, power-loss guarantee or adversarial local-writer protection is claimed.
 - 独立审计在发布时检查其算术和物理契约；读取端不重复运行优化器或审计器。哈希和提交号不能证明输入真实，汇总中的 `optimal` 字段本身也不能替代求解终止检查。 / Publication audits arithmetic and physics; reading verifies bytes. Hashes, Git IDs and a status string are not authenticity or optimality proofs.
+
+v0.3.8 桌面端通过 `publish_run()` 创建运行目录，再用 `read_verified_run()` 返回的已校验字节准备图表。刷新历史时会再次检查目录；选择历史运行时仍需重新安全读取，并与当前已通过质量检查的 CSV 按时间戳和输入值对齐。`VALID` 仅表示本次清单与文件检查通过；本地可写目录中的清单和文件若被同时恶意改写，哈希不能提供真实性保证。 / The desktop publishes, rereads verified bytes and only then prepares charts. Historical selection revalidates files and aligns them with the currently checked CSV. A valid listing is a current integrity check, not an authenticity guarantee against a malicious local writer.
 - 若取消信号到达最终标记写入之后，完整运行可能已提交；取消只保证在检查到信号前不会继续下一步。 / Cancellation after the final marker may arrive after publication has completed.
 
 建议运行目录位于当前用户可控的本地磁盘，读者只调用 `read_verified_run()` 或 `verify`，并保存返回的字节用于后续解析。 / Use a trusted local parent directory and consume the returned verified bytes.

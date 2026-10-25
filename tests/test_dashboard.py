@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from gridwise import dashboard
+from gridwise import dashboard, run_artifacts
 from gridwise.data import import_energy_csv
 from gridwise.desktop import CHARTS, chart_values
 
@@ -24,6 +24,9 @@ def test_valid_synthetic_csv_runs_audited_comparison(tmp_path, monkeypatch):
     result = dashboard.run_comparison(imported)
     chart = result.chart
     assert result.audit_message.startswith("AUDIT PASSED")
+    assert result.run_name is not None
+    verified = run_artifacts.read_verified_run(tmp_path / "gridwise-campus-runs" / result.run_name)
+    assert verified.files["scenario.json"]
     assert len(chart["timestamps"]) == 6
     assert chart["metrics"]["optimized"]["cost_cny"] == pytest.approx(131.0110803324)
     assert chart["metrics"]["baseline"]["cost_cny"] == pytest.approx(162.5)
@@ -44,7 +47,7 @@ def test_invalid_quality_blocks_solver_and_charts(tmp_path, monkeypatch):
     path.write_text(HEADER + "2026-01-01T00:00:00+00:00,,0,0.5\n", encoding="utf-8")
     imported = import_energy_csv(path, 1)
     assert not imported.report.ready
-    monkeypatch.setattr(dashboard.subprocess, "Popen", lambda *_args, **_kwargs:
+    monkeypatch.setattr(dashboard, "publish_run", lambda *_args, **_kwargs:
                         pytest.fail("solver must not run"))
     with pytest.raises(dashboard.DashboardError, match="quality check failed"):
         dashboard.run_comparison(imported)
@@ -58,7 +61,7 @@ def test_interactive_period_limit_blocks_large_solve(tmp_path, monkeypatch):
         for index in range(dashboard.MAX_INTERACTIVE_PERIODS + 1)), encoding="utf-8")
     imported = import_energy_csv(path, 1)
     assert imported.report.ready
-    monkeypatch.setattr(dashboard.subprocess, "Popen", lambda *_args, **_kwargs:
+    monkeypatch.setattr(dashboard, "publish_run", lambda *_args, **_kwargs:
                         pytest.fail("large solve must not run"))
     with pytest.raises(dashboard.DashboardError, match="at most 96"):
         dashboard.run_comparison(imported)
@@ -69,7 +72,7 @@ def test_audit_failure_blocks_chart_preparation(tmp_path, monkeypatch):
     auditor = tmp_path / "bad-auditor.py"
     auditor.write_text("import sys\nsys.stderr.write('summary mismatch')\nsys.exit(2)\n",
                        encoding="utf-8")
-    monkeypatch.setattr(dashboard, "AUDITOR", auditor)
+    monkeypatch.setattr(run_artifacts, "AUDITOR", auditor)
     monkeypatch.setattr(dashboard.tempfile, "tempdir", str(tmp_path))
     monkeypatch.setattr(dashboard, "prepare_visualization_data",
                         lambda *_args: pytest.fail("charts must not be prepared"))
@@ -100,7 +103,7 @@ def test_solver_failure_fails_closed_and_cleans_temporary_files(tmp_path, monkey
     template_path = tmp_path / "infeasible.json"
     template_path.write_text(json.dumps(template), encoding="utf-8")
     monkeypatch.setattr(dashboard.tempfile, "tempdir", str(tmp_path))
-    with pytest.raises(dashboard.DashboardError, match="solver failed"):
+    with pytest.raises(dashboard.DashboardError, match="no optimal solution"):
         dashboard.run_comparison(imported, template_path)
     assert list(tmp_path.glob("gridwise-ui-*")) == []
 
@@ -116,14 +119,85 @@ def test_cancelled_child_process_is_reaped():
         return process
 
     from unittest.mock import patch
-    with patch.object(dashboard.subprocess, "Popen", side_effect=capture):
+    with patch.object(run_artifacts.subprocess, "Popen", side_effect=capture):
         timer = threading.Timer(0.2, cancel.set)
         timer.start()
         try:
-            with pytest.raises(dashboard.DashboardError, match="cancelled"):
-                dashboard._run_command([sys.executable, "-c", "import time; time.sleep(10)"],
-                                       timeout_seconds=5, cancel_event=cancel)
+            with pytest.raises(run_artifacts.RunArtifactError, match="cancelled"):
+                run_artifacts._execute([sys.executable, "-c", "import time; time.sleep(10)"],
+                                       timeout=5, cancel_event=cancel)
         finally:
             timer.cancel()
     assert len(created) == 1
     assert created[0].poll() is not None
+
+
+def test_history_classifies_and_rechecks_selected_run(tmp_path):
+    imported = import_energy_csv(SAMPLE, 1)
+    first = dashboard.run_comparison(imported, runs_root=tmp_path)
+    name = first.run_name
+    entries = dashboard.list_run_history(tmp_path)
+    assert [(entry.name, entry.status) for entry in entries] == [(name, "VALID")]
+    loaded = dashboard.load_verified_comparison(imported, name, tmp_path)
+    assert loaded.chart == first.chart
+    assert loaded.run_name == name
+    target = tmp_path / name / "optimized.csv"
+    target.write_bytes(target.read_bytes() + b"tampered")
+    entries = dashboard.list_run_history(tmp_path)
+    assert entries[0].status == "DAMAGED"
+    with pytest.raises(dashboard.DashboardError, match="size or SHA-256 mismatch"):
+        dashboard.load_verified_comparison(imported, name, tmp_path)
+
+
+def test_history_rejects_incomplete_and_other_input(tmp_path):
+    imported = import_energy_csv(SAMPLE, 1)
+    first = dashboard.run_comparison(imported, runs_root=tmp_path)
+    incomplete = tmp_path / ("run-" + "0" * 32)
+    incomplete.mkdir()
+    statuses = {entry.name: entry.status for entry in dashboard.list_run_history(tmp_path)}
+    assert statuses[first.run_name] == "VALID"
+    assert statuses[incomplete.name] == "INCOMPLETE"
+    with pytest.raises(dashboard.DashboardError, match="Historical run unavailable"):
+        dashboard.load_verified_comparison(imported, incomplete.name, tmp_path)
+    different = tmp_path / "different.csv"
+    different.write_text(HEADER +
+                         "2026-01-01T00:00:00+00:00,1,0,0.5\n", encoding="utf-8")
+    other = import_energy_csv(different, 1)
+    assert other.report.ready
+    with pytest.raises(dashboard.DashboardError, match="row count mismatch"):
+        dashboard.load_verified_comparison(other, first.run_name, tmp_path)
+
+
+def test_two_runs_keep_separate_verified_metrics(tmp_path):
+    imported = import_energy_csv(SAMPLE, 1)
+    first = dashboard.run_comparison(imported, runs_root=tmp_path)
+    second = dashboard.run_comparison(imported, runs_root=tmp_path)
+    assert first.run_name != second.run_name
+    assert first.chart == second.chart
+    assert len(list(tmp_path.glob("run-*"))) == 2
+    assert dashboard.load_verified_comparison(imported, first.run_name, tmp_path).chart == first.chart
+    assert dashboard.load_verified_comparison(imported, second.run_name, tmp_path).chart == second.chart
+
+
+def test_failed_verified_read_never_prepares_chart(tmp_path, monkeypatch):
+    imported = import_energy_csv(SAMPLE, 1)
+
+    def fail_read(_directory):
+        raise run_artifacts.RunArtifactError("synthetic manifest mismatch")
+
+    monkeypatch.setattr(dashboard, "read_verified_run", fail_read)
+    monkeypatch.setattr(dashboard, "prepare_visualization_data",
+                        lambda *_args: pytest.fail("unverified charts must not be prepared"))
+    with pytest.raises(dashboard.DashboardError, match="synthetic manifest mismatch"):
+        dashboard.run_comparison(imported, runs_root=tmp_path)
+
+
+def test_cancelled_history_load_never_reads_files(tmp_path, monkeypatch):
+    imported = import_energy_csv(SAMPLE, 1)
+    cancelled = threading.Event()
+    cancelled.set()
+    monkeypatch.setattr(dashboard, "read_verified_run",
+                        lambda _path: pytest.fail("cancelled history must not read"))
+    with pytest.raises(dashboard.DashboardError, match="cancelled"):
+        dashboard.load_verified_comparison(imported, "run-" + "0" * 32,
+                                           tmp_path, cancel_event=cancelled)

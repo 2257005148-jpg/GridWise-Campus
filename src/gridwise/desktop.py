@@ -15,7 +15,8 @@ except ImportError:  # Pure chart selection remains usable without a GUI runtime
     filedialog = None
     ttk = None
 
-from .dashboard import DashboardError, MAX_INTERACTIVE_PERIODS, ROOT, run_comparison
+from .dashboard import (DashboardError, MAX_INTERACTIVE_PERIODS, ROOT, default_runs_root,
+                        list_run_history, load_verified_comparison, run_comparison)
 from .data import import_energy_csv
 
 
@@ -76,14 +77,17 @@ def chart_values(chart: dict, specification: tuple) -> tuple:
 
 
 class EnergyDesktop:
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root: tk.Tk, *, runs_root: Path | None = None):
         self.root = root
-        root.title("GridWise Campus v0.3.4 | 校园能源分析")
+        root.title("GridWise Campus | 校园能源分析")
         root.geometry("1140x780")
         root.minsize(900, 650)
         root.configure(bg=PAPER)
         self.path = tk.StringVar(value=str(SAMPLE))
         self.step = tk.StringVar(value="1")
+        self.runs_root = tk.StringVar(value=str(runs_root or default_runs_root()))
+        self.selected_run = tk.StringVar()
+        self._history_entries = {}
         self.status = tk.StringVar(value="请选择 CSV 并检查质量 / Select a CSV and check quality")
         self.imported = None
         self.chart = None
@@ -102,6 +106,7 @@ class EnergyDesktop:
         self._layout()
         self.path.trace_add("write", self._invalidate)
         self.step.trace_add("write", self._invalidate)
+        self.runs_root.trace_add("write", self._invalidate)
         self._poll_id = root.after(50, self._poll)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         root.bind("<Next>", self._scroll_keyboard)
@@ -175,6 +180,29 @@ class EnergyDesktop:
         self.status_label.bind("<Configure>", lambda event: self.status_label.configure(
             wraplength=max(80, event.width - 12)))
         self.progress = ttk.Progressbar(outer, mode="indeterminate")
+
+        history = ttk.Frame(outer)
+        history.pack(fill="x", pady=(8, 12))
+        ttk.Label(history, text="本地运行根目录 / Local runs root").grid(
+            row=0, column=0, columnspan=4, sticky="w")
+        ttk.Entry(history, textvariable=self.runs_root).grid(
+            row=1, column=0, columnspan=2, sticky="ew", pady=5)
+        ttk.Button(history, text="选择目录 / Browse root", command=self._choose_runs_root).grid(
+            row=1, column=2, padx=(8, 0))
+        self.refresh_button = ttk.Button(history, text="刷新运行 / Refresh runs",
+                                         command=self._refresh_history)
+        self.refresh_button.grid(row=1, column=3, padx=(8, 0))
+        ttk.Label(history, text="运行历史 / Run history (VALID / INCOMPLETE / DAMAGED)").grid(
+            row=2, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        self.history_combo = ttk.Combobox(history, textvariable=self.selected_run,
+                                          state="readonly", values=())
+        self.history_combo.grid(row=3, column=0, columnspan=3, sticky="ew", pady=5)
+        self.load_button = ttk.Button(history, text="读取所选 / Load selected",
+                                      command=self._load_history, state="disabled")
+        self.load_button.grid(row=3, column=3, padx=(8, 0))
+        history.columnconfigure(0, weight=1)
+        history.columnconfigure(1, weight=1)
+        self.history_combo.bind("<<ComboboxSelected>>", self._select_history)
 
         ttk.Label(outer, text="数据质量与运行日志 / Data quality and run log").pack(anchor="w")
         quality_frame = ttk.Frame(outer)
@@ -312,6 +340,11 @@ class EnergyDesktop:
         self.imported = None
         self.check_button.configure(state="normal")
         self.run_button.configure(state="disabled")
+        self.load_button.configure(state="disabled")
+        self.refresh_button.configure(state="normal")
+        self.selected_run.set("")
+        self.history_combo.configure(values=())
+        self._history_entries.clear()
         self.cancel_button.configure(state="disabled")
         self.status.set("输入已改变，请重新检查 / Input changed; check again")
         self._clear_results()
@@ -329,6 +362,8 @@ class EnergyDesktop:
         self._cancel_requested = False
         self._active_kind = kind
         self.check_button.configure(state="disabled")
+        self.refresh_button.configure(state="disabled")
+        self.load_button.configure(state="disabled")
         self.cancel_button.configure(state="normal")
         self.cancel_button.focus_set()
         self.progress.pack(fill="x", pady=(2, 0))
@@ -366,10 +401,11 @@ class EnergyDesktop:
             self._cancel_requested = False
             self._active_kind = None
             self.check_button.configure(state="normal")
+            self.refresh_button.configure(state="normal")
             self.cancel_button.configure(state="disabled")
             if cancelled:
                 self._clear_results()
-                if kind == "run" and self.imported is not None:
+                if kind in ("run", "history_load") and self.imported is not None:
                     self.run_button.configure(state="normal")
                 self.status.set("已取消 / Cancelled")
                 self._append_log("任务已取消 / Task cancelled")
@@ -379,13 +415,16 @@ class EnergyDesktop:
                         raise error
                     if kind == "quality":
                         self._show_quality(value)
+                    elif kind == "history":
+                        self._show_history(value)
                     else:
                         self._show_result(value)
                 except Exception as exc:
                     self._show_failure(kind, exc)
             if focus_on_cancel:
-                (self.run_button if kind == "run" and self.imported is not None
+                (self.run_button if kind in ("run", "history_load") and self.imported is not None
                  else self.check_button).focus_set()
+            self._select_history()
         self._poll_id = self.root.after(50, self._poll)
 
     def _cancel_job(self, _event=None):
@@ -402,9 +441,9 @@ class EnergyDesktop:
 
     def _show_failure(self, kind, error):
         self._clear_results()
-        if kind == "run" and self.imported is not None:
+        if kind in ("run", "history_load") and self.imported is not None:
             self.run_button.configure(state="normal")
-        self.status.set("运行失败；详见日志 / Run failed; see log" if kind == "run"
+        self.status.set("运行失败；详见日志 / Run failed; see log" if kind in ("run", "history_load")
                         else "检查失败；详见日志 / Check failed; see log")
         self._append_log(f"{type(error).__name__}: {error}")
 
@@ -417,6 +456,8 @@ class EnergyDesktop:
         if self._pending_jobs:
             self.check_button.configure(state="disabled")
             self.run_button.configure(state="disabled")
+            self.refresh_button.configure(state="disabled")
+            self.load_button.configure(state="disabled")
             self.cancel_button.configure(state="disabled")
             self.status.set("正在关闭并清理 / Closing and cleaning up…")
             return
@@ -436,6 +477,58 @@ class EnergyDesktop:
                                                     ("All files", "*.*")])
         if selected:
             self.path.set(selected)
+
+    def _choose_runs_root(self):
+        if self._closing or self._active_kind is not None:
+            return
+        selected = filedialog.askdirectory(title="选择运行根目录 / Select runs root")
+        if selected:
+            self.runs_root.set(selected)
+
+    def _refresh_history(self):
+        if self._closing or self._active_kind is not None:
+            return
+        runs_root = Path(self.runs_root.get())
+        self.status.set("正在核验运行历史 / Verifying run history…")
+        self._start_job("history", lambda cancel: list_run_history(runs_root, cancel_event=cancel))
+
+    def _show_history(self, entries):
+        self._history_entries = {entry.name: entry for entry in entries}
+        labels = tuple(f"{entry.name} [{entry.status}]" for entry in entries)
+        self.history_combo.configure(values=labels)
+        self.selected_run.set("")
+        self.load_button.configure(state="disabled")
+        counts = {status: sum(entry.status == status for entry in entries)
+                  for status in ("VALID", "INCOMPLETE", "DAMAGED")}
+        self.status.set("运行历史 / Runs: " + ", ".join(
+            f"{status}={count}" for status, count in counts.items()))
+        for entry in entries:
+            if entry.status != "VALID":
+                self._append_log(f"{entry.name} [{entry.status}]: {entry.detail}")
+
+    def _select_history(self, _event=None):
+        selected = self.selected_run.get()
+        name = selected.rsplit(" [", 1)[0] if " [" in selected else ""
+        available = (not self._closing and self._active_kind is None and
+                     self.imported is not None and self.imported.report.ready and
+                     name in self._history_entries)
+        self.load_button.configure(state="normal" if available else "disabled")
+
+    def _load_history(self):
+        if self._closing or self._active_kind is not None:
+            return
+        selected = self.selected_run.get()
+        name = selected.rsplit(" [", 1)[0] if " [" in selected else ""
+        if self.imported is None or not self.imported.report.ready or name not in self._history_entries:
+            self.status.set("请先检查输入并选择运行 / Check input and select a run")
+            return
+        imported = self.imported
+        runs_root = Path(self.runs_root.get())
+        self._clear_results()
+        self.run_button.configure(state="disabled")
+        self.status.set("正在重新校验运行 / Revalidating selected run…")
+        self._start_job("history_load", lambda cancel: load_verified_comparison(
+            imported, name, runs_root, cancel_event=cancel))
 
     def _check(self):
         if self._closing or self._active_kind is not None:
@@ -461,6 +554,7 @@ class EnergyDesktop:
             else:
                 self.run_button.configure(state="normal")
                 self.status.set("质量检查通过 / Quality check passed")
+            self._select_history()
         else:
             self.imported = None
             self.run_button.configure(state="disabled")
@@ -469,7 +563,7 @@ class EnergyDesktop:
     def _run(self):
         if self._closing:
             return
-        if self._job_running():
+        if self._active_kind is not None:
             return
         if self.imported is None or not self.imported.report.ready:
             self.status.set("请先通过质量检查 / Check data first")
@@ -481,7 +575,9 @@ class EnergyDesktop:
         self._clear_results()
         self.run_button.configure(state="disabled")
         self.status.set("正在计算与审计 / Solving and auditing…")
-        self._start_job("run", lambda cancel: run_comparison(imported, cancel_event=cancel))
+        runs_root = Path(self.runs_root.get())
+        self._start_job("run", lambda cancel: run_comparison(
+            imported, cancel_event=cancel, runs_root=runs_root))
 
     def _show_result(self, result):
         try:
@@ -496,6 +592,13 @@ class EnergyDesktop:
             raise DashboardError(f"图表数据无效 / Invalid chart data: {exc}") from exc
         self.chart = result.chart
         self.status.set(result.audit_message)
+        if result.run_name:
+            from .dashboard import RunHistoryEntry
+            self._history_entries[result.run_name] = RunHistoryEntry(
+                result.run_name, "VALID", "verified")
+            self.history_combo.configure(values=tuple(
+                f"{name} [{entry.status}]" for name, entry in self._history_entries.items()))
+            self.selected_run.set(f"{result.run_name} [VALID]")
         for key, pair in self.metric_labels.items():
             optimized = self.chart["metrics"]["optimized"][key]
             baseline = self.chart["metrics"]["baseline"][key]
@@ -505,6 +608,7 @@ class EnergyDesktop:
         for canvas, spec in self.chart_canvases:
             self._draw(canvas, spec)
         self.run_button.configure(state="normal")
+        self._select_history()
 
     def _draw(self, canvas, specification):
         canvas.delete("all")

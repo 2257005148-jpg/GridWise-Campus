@@ -243,10 +243,14 @@ def _execute(command: list[str], timeout: float, cancel_event: threading.Event) 
 
 def publish_run(scenario: Path, runs_parent: Path, *,
                 cancel_event: threading.Event | None = None,
-                timeout_seconds: float = 120) -> Path:
+                timeout_seconds: float = 120,
+                solve_timeout_seconds: float | None = None,
+                audit_timeout_seconds: float | None = None) -> Path:
     """Create a new run directory; leave failures incomplete for inspection."""
-    if timeout_seconds <= 0:
-        raise RunArtifactError("timeout_seconds must be positive")
+    solve_timeout = timeout_seconds if solve_timeout_seconds is None else solve_timeout_seconds
+    audit_timeout = timeout_seconds if audit_timeout_seconds is None else audit_timeout_seconds
+    if solve_timeout <= 0 or audit_timeout <= 0:
+        raise RunArtifactError("process timeouts must be positive")
     parent = Path(os.path.abspath(runs_parent))
     _reject_link_path(parent)
     parent.mkdir(parents=True, exist_ok=True)
@@ -266,12 +270,12 @@ def publish_run(scenario: Path, runs_parent: Path, *,
         (stage / "scenario.json").write_bytes(source)
         event = cancel_event or threading.Event()
         _execute([sys.executable, "-m", "gridwise.cli", str(stage / "scenario.json"),
-                  str(stage)], timeout_seconds, event)
+                  str(stage)], solve_timeout, event)
         before_audit = {name: hashlib.sha256(_read_file(stage / name, MAX_FILE_BYTES)).digest()
                         for name in RUN_FILES}
         audit, _ = _execute([sys.executable, str(AUDITOR), str(stage / "scenario.json"),
                              str(stage / "optimized.csv"), str(stage / "baseline.csv"),
-                             str(stage / "summary.json")], timeout_seconds, event)
+                             str(stage / "summary.json")], audit_timeout, event)
         if "AUDIT PASSED" not in audit:
             raise RunArtifactError("independent auditor did not report AUDIT PASSED")
         if event.is_set():

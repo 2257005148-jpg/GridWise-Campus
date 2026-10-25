@@ -41,3 +41,7 @@ v0.3.4：桌面入口沿用 v0.3.3 的有条件 Windows DPI 感知设置；取�
 ## v0.3.7 运行结果契约 / Verified run artifact contract
 
 可选路径 `run_artifacts.publish_run → 既有 cli 子进程 → 既有独立 audit_exports.py 子进程 → manifest 校验 → COMPLETE`。每次新建一个运行目录；`read_verified_run` 只返回完成标记、固定文件集合、大小、哈希与元数据全部通过校验的字节。旧 CLI 与桌面临时运行路径不变。目录在生成期间可见，协作读者必须通过安全读取接口；不承诺断电恢复或恶意本机写入者防护。 / The opt-in publisher uses the unchanged solver CLI and independent auditor. The verified reader returns checked bytes. Existing CLI and desktop workflows remain intact; power-loss and adversarial-writer guarantees are out of scope. See [the full contract](run-artifact-contract.md).
+
+## v0.3.8 桌面集成 / Desktop integration
+
+桌面后台链路为 `data.import_energy_csv → dashboard.build_scenario → run_artifacts.publish_run（既有 CLI 求解、独立审计、清单与完成标记）→ read_verified_run → data.prepare_visualization_data → Tk 主线程`。图表层只接收安全读取接口返回的 `summary.json` 字节；读取历史目录时重新验清单与哈希，并用当前已检查 CSV 逐时核对输入。运行历史限量枚举并区分有效、未完成、损坏；不会自动删除目录。临时场景 JSON 仍由上下文管理器清理，已发布目录持久保存于用户指定的本地根目录。取消或关闭仍等待后台任务；进程取消后可能留下明确标记为未完成的目录供检查。 / The desktop now publishes and rereads verified bundles before chart preparation. Historical selection revalidates the bundle and matches it to the currently checked CSV. Temporary scenario files are cleaned up; completed and incomplete run directories are retained for inspection. The model and independent audit contract are unchanged.
