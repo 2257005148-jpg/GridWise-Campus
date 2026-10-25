@@ -22,6 +22,14 @@ v0.1.2 离线验证资源边界 / Offline audit bounds: 单文件 ≤ 32 MiB，C
 
 审计器要求场景、汇总及 CSV 使用当前契约的**精确字段集合**，CSV 列顺序也固定；额外字段或重复 JSON 键均失败，避免悄然忽略新数据。 / Exact schema and column order are required; extra fields and duplicate JSON keys fail closed.
 
+## v0.2.0 离线输入 CSV / Offline input CSV
+
+新输入 CSV 与上述**结果 CSV** 是不同契约。输入列固定为 `timestamp,load_kw,pv_kw,price_cny_per_kwh`，按此顺序且不允许额外/重复列；字段后缀就是单位，不自动转换 W、MW 或其他币种。UTF-8 可带 BOM；逐行时间带 UTC 偏移，按显式 `step_hours`（h）绝对时间连续。负荷、光伏和电价非负、有限、≤10¹²；缺失值统计后使该次导入 `ready=false`，不返回部分有效时序。 / Input CSV uses exact unit-bearing headers, offset-aware timestamps and all-or-nothing readiness.
+
+`QualityReport` 含来源路径、`ready`、原始数据行数、步长、每列 `missing_counts` 及带代码/物理行/字段的 `issues`。CSV 单文件 ≤32 MiB、单物理行 ≤64 KiB、时段 ≤50,000、数值 token ≤128 字符、步长为 (0,24] 小时。异常不会被插值或自动修复。 / The report records missingness and localizable issues without imputation.
+
+图表数据的功率为 kW、SOC/购电量为 kWh、电价为 CNY/kWh、费用为 CNY；逐时电费按 `grid_kw × price_cny_per_kwh × step_hours` 计算。成本、峰值和购电量分别展示，不将电费下降称作削峰或节能。 / Chart metrics preserve distinct units and meanings.
+
 v0.1.3 `summary.run.scenario_sha256` 为 `sha256:` 前缀加原始 UTF-8 输入字节的 64 位小写十六进制摘要；不规范化 BOM、换行、键顺序、数值文本或时间戳。`model_version=cost-mip-v1` 表示未改变的纯电费优化模型；`solver_name=appsi_highs`，`status=optimal`。完整来源边界见 `docs/input-provenance.md`。 / The digest covers exact source bytes; metadata identifies the unchanged cost model and configured solver, without asserting input authenticity.
 
 v0.1.4 完整 `model_version` 改为 `cost-mip-v1+sha256.<规范化 core.py 摘要>`；`cost-mip-v1` 保留为家族名。`run.git_commit` 为 40 位 HEAD 或 `unavailable`；`run.source_state` 为 `clean`、`dirty` 或 `unavailable`。Git 状态检查范围与未提交源码行为见 `docs/input-provenance.md`。 / The full version now binds to normalized model source; Git fields explicitly describe the checkout state.

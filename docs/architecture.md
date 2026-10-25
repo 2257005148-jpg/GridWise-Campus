@@ -18,3 +18,9 @@ v0.1.7 `tools/audit_history.py` 增加一个独立、只读的历史入口：先
 v0.1.8 在历史入口增加四文件字节快照：历史标准库审计器读取快照，原件在审计前后重新散列；检出时以命令局部 Git 设置禁用钩子和 fsmonitor，并继续核对检出的审计器及锁文件字节。临时工作树不是恶意仓库沙箱；`--repo` 仅面向已审查项目和受控合成临时仓库。 / The historical auditor reads stable snapshots; Git checkout hooks and fsmonitor are disabled for that invocation. Arbitrary untrusted repositories remain out of scope.
 
 v0.1.9 当前模型源码不可读时，`current_context=UNKNOWN` 并保留定位信息；历史上下文通过独立预检后仍可单独执行固定摘要的历史审计器。其余安全边界与纯电费模型均不变。 / An unavailable current model source no longer aborts an otherwise independent historical audit; the current verdict remains unknown.
+
+## v0.2.0 离线数据层 / Offline data layer
+
+新增独立路径 `合成或明确提供的 CSV → data.import_energy_csv → 质量报告 + 完整有效时序 → prepare_visualization_data(既有导出汇总) → 图表数据契约`。`data.py` 只使用标准库，既不调用 Pyomo，也不读取设备或网络。质量不通过时不给下游部分时序；图表准备要求优化与基线的时间、输入回显和三个汇总指标一致。现有 JSON→纯电费求解路径未改，CSV 导入尚不自动生成优化场景，交互式 UI 尚未实现。 / The CSV quality and chart-data path is separate from the unchanged optimizer; no live integration or UI exists.
+
+数据层设计和开源参考比较见[方案](data-layer-visualization-plan.md)。OpenEMS、Emoncms 和 PyPSA 只作为设计参考，未安装或复制其代码。 / External projects are design references only.

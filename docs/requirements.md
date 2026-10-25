@@ -7,6 +7,8 @@
 | 合成 JSON 时序输入、单位和间隔校验 / synthetic input | 已测试 / tested | `tests/test_core.py` |
 | 多时段经济调度、无储能基线 / dispatch and baseline | 已测试 / tested | 模型结果、独立校验、边界测试 / model and independent checks |
 | CSV、JSON、SVG 输出 / exports | 已测试 / tested | 生成文件与内容检查 / generated artifacts |
+| 离线 CSV 能源输入与质量报告 / offline CSV energy import and quality report | 已测试 / tested | 精确字段/单位、时间连续性、缺失统计、失败时无部分可用序列；`tests/test_data.py` / exact schema, time and missingness checks |
+| 可视化数据准备 / chart-data preparation | 已测试 / tested | 同时段优化/基线对齐，成本、购电量和峰值分别计算；尚无交互 UI。 / aligned exports and distinct metrics; no interactive UI |
 | 真实校园数据导入、清洗、权限 / campus data | 计划中 / planned | 授权、隐私和质量方案先行 / authorization first |
 | 负荷预测、潮流、节能基线 / forecasting, power flow, savings baseline | 计划中 / planned | 独立方法与验证集 / independent validation |
 | Streamlit 界面、服务 API、数据库 / UI, API, database | 计划中 / planned | 契约、安全和端到端测试 / contracts and tests |

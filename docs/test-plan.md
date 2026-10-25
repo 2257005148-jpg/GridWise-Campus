@@ -32,3 +32,5 @@ v0.1.7 `tests/test_audit_history.py` 只用合成场景与临时 Git 仓库测�
 v0.1.8 安全回归补充 / Security regressions: 临时仓库配置有可观察 `post-checkout` 钩子时不得执行；检出锁文件字节与 Git blob 不同时，历史算术不得运行；快照前及快照后原件被替换都要失败；成功路径校验四原件字节与临时工作树清理。测试仓库的依赖约束按实际安装的四个运行包生成，以避免把 Windows 观察到的传递版本误当成其他平台的锁。CI 需完整 Git 历史才能读取已审查的 v0.1.5 blob；其他平台执行状态见阶段报告。 / Tests exercise checkout safety and stable snapshots using only synthetic repositories.
 
 v0.1.9 增加当前模型源码不可读的合成回归：`current_context=UNKNOWN`，而历史预检和算术可独立为 `PASS`；修复前该路径抛出未处理的 `AuditError`，没有结构化状态。继续复用既有创建/清理失败、attributes、换行、原件变化和缺提交/schema 测试。最终数量见 v0.1.9 报告，不能从静态覆盖推断其他平台通过。 / A new regression confirms independent status reporting when the current source cannot be read.
+
+v0.2.0 `tests/test_data.py` 覆盖合成输入 CSV 与 JSON 一致、15/30/60 分钟步长、缺失值统计且无部分数据、错误列名/单位/顺序、重复/错序/缺口/无偏移时间、异常数值、空/截断/错误编码/空白行和缺文件，以及质量 CLI 退出码。图表准备测试从合成求解生成两方案，核对成本、购电量、峰值与 SOC 时序，并拒绝时间、输入回显或汇总篡改。最终实际数量和平台范围见 v0.2.0 阶段报告；图表准备不替代既有独立导出审计。 / Synthetic tests cover parsing, quality, series completeness, metrics and chart alignment.
