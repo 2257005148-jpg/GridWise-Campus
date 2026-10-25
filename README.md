@@ -1,6 +1,6 @@
 # 长理智慧能源管理系统 / GridWise Campus
 
-面向高校的通用能源分析与优化项目。现有离线原型支持合成数据的纯电费调度、无储能基线、CSV 质量检查及 v0.3.1 本机交互式可视化；无学校数据接口、实时控制或认证声明。 / The offline prototype includes cost-only dispatch, a no-storage baseline, CSV quality checks and a local interactive desktop view. It has no campus connection or control claim.
+面向高校的通用能源分析与优化项目。现有离线原型支持合成数据的纯电费调度、无储能基线、CSV 质量检查及 v0.3.2 本机交互式可视化；无学校数据接口、实时控制或认证声明。 / The offline prototype includes cost-only dispatch, a no-storage baseline, CSV quality checks and a local interactive desktop view. It has no campus connection or control claim.
 
 ## 已实现 / Implemented
 
@@ -28,6 +28,8 @@ py -3.12 -m venv [LOCAL_ENV_ROOT]\gridwise-campus-py312
 打开 `outputs/sample/grid-purchase.svg` 查看购电功率比较。输出目录已被 Git 忽略。 / Open that SVG to view grid purchase. The output directory is Git-ignored.
 
 桌面原型默认载入合成 CSV；也可主动选择本地 CSV 并填写小时步长。先点“检查数据”，通过后再点“运行对比”。使用合成场景的设备参数；每次交互式求解最多 96 时段，运行文件仅存于系统临时目录。检查与调度在后台执行，关闭窗口或更换输入会取消在途运行；求解和独立审计各有 120 秒上限。需要有可用的图形桌面环境。详情见[界面设计与选型](docs/v0.3-desktop-design.md)。 / The desktop uses synthetic equipment assumptions, keeps Tk responsive during checks and dispatch, cancels in-flight work on close or input change, and bounds solver and audit subprocesses to 120 seconds each. Interactive runs are capped at 96 periods.
+
+v0.3.2 为小窗口和高 DPI 字体增加页面纵向滚动、按可用宽度排列的指标卡、短页签与保留时区的两行时间标签。忙碌时显示不确定进度条；它表示任务正在运行，不表示求解完成百分比。 / The desktop now scrolls vertically, reflows metric cards, shortens chart tabs when needed, and keeps timezone information on two-line time labels. The busy bar shows activity, not solver completion percentage.
 
 审计命令仅使用 Python 标准库读取原始输入和导出文件；退出码 0 为通过，2 为数据或计算校验失败。 / The audit command uses only the standard library to inspect the source and exports; exit 0 means pass, 2 means an audit failure.
 

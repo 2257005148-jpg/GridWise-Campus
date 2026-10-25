@@ -57,6 +57,7 @@ def test_run_keeps_tk_responsive_and_rejects_duplicate_clicks(monkeypatch):
         app._run()
         pump(root, lambda: bool(calls))
         assert len(calls) == 1
+        assert app.progress.winfo_manager() == "pack"
         fired = []
         root.after(10, lambda: fired.append(True))
         pump(root, lambda: bool(fired), seconds=0.5)
@@ -64,6 +65,7 @@ def test_run_keeps_tk_responsive_and_rejects_duplicate_clicks(monkeypatch):
         release.set()
         pump(root, lambda: "失败" in app.status.get() or "failed" in app.status.get())
         assert app.chart is None
+        assert app.progress.winfo_manager() == ""
     finally:
         release.set()
         root.destroy()
@@ -152,3 +154,79 @@ def test_invalid_csv_disables_run_and_clears_results(tmp_path, payload):
         assert path.read_bytes() == payload
     finally:
         root.destroy()
+
+
+@pytest.mark.parametrize("factor", [1.0, 1.25, 1.5, 2.0])
+def test_minimum_window_keeps_charts_and_metric_cards_usable_at_dpi_scales(factor):
+    global _interpreter
+    if _interpreter is None:
+        _interpreter = tk.Tk()
+        _interpreter.withdraw()
+    original = float(_interpreter.tk.call("tk", "scaling"))
+    root = None
+    try:
+        _interpreter.tk.call("tk", "scaling", original * factor)
+        root, app = new_desktop()
+        root.geometry("900x650")
+        root.deiconify()
+        root.update()
+        assert app.notebook.winfo_height() >= 200
+        assert app.notebook.winfo_reqwidth() <= app.notebook.winfo_width()
+        for card in app._cards:
+            assert card.winfo_width() >= card.winfo_reqwidth() - 2
+        assert app.run_button.winfo_rootx() + app.run_button.winfo_width() <= (
+            app._viewport.winfo_rootx() + app._viewport.winfo_width())
+        assert app._viewport.yview()[1] < 1
+        app._viewport.yview_moveto(1)
+        root.update()
+        assert app.notebook.winfo_rooty() < (
+            app._viewport.winfo_rooty() + app._viewport.winfo_height())
+        assert app.notebook.winfo_rooty() + app.notebook.winfo_height() > (
+            app._viewport.winfo_rooty())
+    finally:
+        if root is not None:
+            root.destroy()
+        _interpreter.tk.call("tk", "scaling", original)
+
+
+def test_very_long_invalid_path_is_reported_without_crashing(tmp_path):
+    root, app = new_desktop()
+    long_path = str(tmp_path / ("x" * 270 + ".csv"))
+    try:
+        app.path.set(long_path)
+        app._check()
+        pump(root, lambda: "未通过" in app.status.get() or "失败" in app.status.get())
+        assert app.chart is None
+        assert app.run_button.instate(["disabled"])
+        assert long_path in app.quality.get("1.0", "end")
+    finally:
+        root.destroy()
+
+
+def test_chart_time_labels_remain_separate_at_double_scaling():
+    global _interpreter
+    if _interpreter is None:
+        _interpreter = tk.Tk()
+        _interpreter.withdraw()
+    original = float(_interpreter.tk.call("tk", "scaling"))
+    root = None
+    try:
+        _interpreter.tk.call("tk", "scaling", original * 2)
+        root, app = new_desktop()
+        root.geometry("900x650")
+        root.deiconify()
+        root.update()
+        app._show_result(desktop.run_comparison(app.imported))
+        root.update()
+        canvas = app.chart_canvases[0][0]
+        texts = [(canvas.itemcget(item, "text"), canvas.bbox(item))
+                 for item in canvas.find_all() if canvas.type(item) == "text"]
+        labels = [box for value, box in texts if value.startswith("01-01")]
+        assert len(labels) == 3
+        labels.sort(key=lambda box: box[0])
+        assert all(first[2] < second[0] for first, second in zip(labels, labels[1:]))
+        assert all(box[3] < canvas.winfo_height() - 20 for box in labels)
+    finally:
+        if root is not None:
+            root.destroy()
+        _interpreter.tk.call("tk", "scaling", original)

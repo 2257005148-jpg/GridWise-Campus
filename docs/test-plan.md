@@ -40,3 +40,5 @@ v0.2.0 验收补测 / Acceptance closure: 对 BOM、空白值、跨偏移同一�
 v0.3.0 `tests/test_dashboard.py` 使用合成 CSV 检查实际求解、独立审计、成本/峰值与五组图表序列；无效输入、超过 96 时段、独立审计失败都不得产生图表。Windows 图形桌面还应执行 Tk 窗口创建、质量检查、运行和 Canvas 刷新的动态烟测。完整 pytest 与既有导出审计仍须通过；具体数量与平台范围见阶段报告。 / Controller regressions and a GUI smoke check cover the local prototype; platform claims require actual execution.
 
 v0.3.1 增加 Windows Tk 控制层与后台流程回归：重复点击不重启任务、输入切换丢弃过期结果、关闭时取消、残缺图表不得展示成功、错误 CSV 禁用调度且原件字节不变；控制层还检验求解超时、求解失败、审计失败与临时目录清理。GUI 烟测须实际创建窗口并走有效和无效输入路径；平台范围、数量和退出码见 v0.3.1 阶段报告。 / Tk and controller tests exercise cancellation, stale-result rejection, failure gating, cleanup and a real Windows window smoke test.
+
+v0.3.2 增加四档 Tk 程序化缩放的最小窗口布局断言：图表高度、页签宽度、指标卡宽度、按钮边界和滚动可达性；双倍缩放的时间标签不得重叠。超长路径应报告失败且不崩溃，后台运行条在结束时隐藏。与 v0.3.1 异步、审计和数据层测试一起运行；真实系统显示缩放、Linux/macOS 与托管 CI 的执行状态须在阶段报告中单列。 / Layout and state regressions cover four Tk scaling factors, chart label separation, long paths, scrolling and activity feedback; platform execution claims remain evidence based.

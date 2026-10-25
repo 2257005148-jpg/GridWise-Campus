@@ -58,7 +58,7 @@ def chart_values(chart: dict, specification: tuple) -> tuple:
 class EnergyDesktop:
     def __init__(self, root: tk.Tk):
         self.root = root
-        root.title("GridWise Campus v0.3.1 | 校园能源分析")
+        root.title("GridWise Campus v0.3.2 | 校园能源分析")
         root.geometry("1140x780")
         root.minsize(900, 650)
         root.configure(bg=PAPER)
@@ -73,6 +73,8 @@ class EnergyDesktop:
         self._cancel = None
         self._active_kind = None
         self._closed = False
+        self._cards = []
+        self._card_columns = None
         self._style()
         self._layout()
         self.path.trace_add("write", self._invalidate)
@@ -101,11 +103,23 @@ class EnergyDesktop:
                         font=("Microsoft YaHei UI", 9))
 
     def _layout(self):
-        outer = ttk.Frame(self.root, padding=18)
-        outer.pack(fill="both", expand=True)
+        self._viewport = tk.Canvas(self.root, bg=PAPER, highlightthickness=0)
+        self._viewport.pack(side="left", fill="both", expand=True)
+        scrollbar = ttk.Scrollbar(self.root, orient="vertical",
+                                  command=self._viewport.yview)
+        scrollbar.pack(side="right", fill="y")
+        self._viewport.configure(yscrollcommand=scrollbar.set)
+        outer = ttk.Frame(self._viewport, padding=18)
+        self._content = self._viewport.create_window((0, 0), window=outer, anchor="nw")
+        self._viewport.bind("<Configure>", self._resize_viewport)
+        outer.bind("<Configure>", lambda _event: self._viewport.configure(
+            scrollregion=self._viewport.bbox("all")))
+        self._viewport.bind("<MouseWheel>", self._scroll_page)
+        outer.bind("<MouseWheel>", self._scroll_page)
         ttk.Label(outer, text="GridWise Campus", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(outer, text="校园能源调度观察台 / Offline dispatch workspace",
-                  style="Sub.TLabel").pack(anchor="w", pady=(0, 18))
+        self.subtitle = ttk.Label(outer, text="校园能源调度观察台 / Offline dispatch workspace",
+                                  style="Sub.TLabel")
+        self.subtitle.pack(anchor="w", fill="x", pady=(0, 18))
 
         controls = ttk.Frame(outer)
         controls.pack(fill="x")
@@ -126,8 +140,12 @@ class EnergyDesktop:
         self.run_button = ttk.Button(actions, text="运行对比 / Run comparison",
                                      style="Run.TButton", command=self._run, state="disabled")
         self.run_button.pack(side="left", padx=10)
-        ttk.Label(actions, textvariable=self.status, style="Sub.TLabel",
-                  wraplength=450).pack(side="left", padx=12, fill="x", expand=True)
+        self.status_label = ttk.Label(actions, textvariable=self.status,
+                                      style="Sub.TLabel", wraplength=450)
+        self.status_label.pack(side="left", padx=12, fill="x", expand=True)
+        self.status_label.bind("<Configure>", lambda event: self.status_label.configure(
+            wraplength=max(80, event.width - 12)))
+        self.progress = ttk.Progressbar(outer, mode="indeterminate")
 
         quality_frame = ttk.Frame(outer)
         quality_frame.pack(fill="x", pady=(10, 14))
@@ -143,6 +161,8 @@ class EnergyDesktop:
 
         metric_frame = ttk.Frame(outer)
         metric_frame.pack(fill="x", pady=(0, 12))
+        self.metric_frame = metric_frame
+        metric_frame.bind("<Configure>", self._relayout_metric_cards)
         self.metric_labels = {}
         for index, (key, caption) in enumerate((
             ("cost_cny", "购电费用 / Cost · CNY"),
@@ -150,24 +170,30 @@ class EnergyDesktop:
             ("peak_grid_kw", "购电峰值 / Grid peak · kW"),
         )):
             card = tk.Frame(metric_frame, bg=WHITE, padx=14, pady=10)
-            card.grid(row=0, column=index, padx=(0, 10), sticky="ew")
-            metric_frame.columnconfigure(index, weight=1)
+            self._cards.append(card)
             tk.Label(card, text=caption, bg=WHITE, fg=MUTED,
                      font=("Microsoft YaHei UI", 9)).pack(anchor="w")
-            tk.Label(card, text="优化 / 基线  Optimized / Baseline", bg=WHITE,
-                     fg=MUTED, font=("Microsoft YaHei UI", 8)).pack(anchor="w")
             values = tk.Frame(card, bg=WHITE)
             values.pack(fill="x", pady=(5, 0))
-            optimized_label = tk.Label(values, text="—", bg=WHITE, fg=TEAL,
+            optimized_row = tk.Frame(values, bg=WHITE)
+            optimized_row.pack(fill="x")
+            tk.Label(optimized_row, text="优化 / Optimized", bg=WHITE, fg=MUTED,
+                     font=("Microsoft YaHei UI", 8)).pack(side="left")
+            optimized_label = tk.Label(optimized_row, text="—", bg=WHITE, fg=TEAL,
                                        font=("Microsoft YaHei UI", 15, "bold"))
-            optimized_label.pack(side="left", anchor="w")
-            baseline_label = tk.Label(values, text="—", bg=WHITE, fg=MUTED,
+            optimized_label.pack(side="right")
+            baseline_row = tk.Frame(values, bg=WHITE)
+            baseline_row.pack(fill="x")
+            tk.Label(baseline_row, text="基线 / Baseline", bg=WHITE, fg=MUTED,
+                     font=("Microsoft YaHei UI", 8)).pack(side="left")
+            baseline_label = tk.Label(baseline_row, text="—", bg=WHITE, fg=MUTED,
                                       font=("Microsoft YaHei UI", 13))
-            baseline_label.pack(side="right", anchor="e")
+            baseline_label.pack(side="right")
             self.metric_labels[key] = (optimized_label, baseline_label)
 
-        self.notebook = ttk.Notebook(outer)
-        self.notebook.pack(fill="both", expand=True)
+        chart_height = max(300, round(300 * float(self.root.tk.call("tk", "scaling")) / 1.333))
+        self.notebook = ttk.Notebook(outer, height=chart_height)
+        self.notebook.pack(fill="x")
         for specification in CHARTS:
             tab = ttk.Frame(self.notebook, padding=8)
             self.notebook.add(tab, text=specification[0])
@@ -175,10 +201,47 @@ class EnergyDesktop:
             canvas.pack(fill="both", expand=True)
             canvas.bind("<Configure>", lambda _event, c=canvas, s=specification:
                         self._draw(c, s))
+            canvas.bind("<MouseWheel>", self._scroll_page)
             self.chart_canvases.append((canvas, specification))
-        ttk.Label(outer, text="仅离线合成或已获授权的数据 / Synthetic or explicitly supplied data only. "
-                  "成本、购电量与峰值独立解释 / Interpret metrics separately.",
-                  style="Sub.TLabel").pack(anchor="w", pady=(10, 0))
+        self.footer = ttk.Label(
+            outer, text="仅离线合成或已获授权的数据 / Synthetic or explicitly supplied data only. "
+                        "成本、购电量与峰值独立解释 / Interpret metrics separately.",
+            style="Sub.TLabel")
+        self.footer.pack(anchor="w", fill="x", pady=(10, 0))
+
+    def _scroll_page(self, event):
+        self._viewport.yview_scroll(-1 if event.delta > 0 else 1, "units")
+
+    def _resize_viewport(self, event):
+        self._viewport.itemconfigure(self._content, width=event.width)
+        text_width = max(180, event.width - 48)
+        self.subtitle.configure(wraplength=text_width)
+        self.footer.configure(wraplength=text_width)
+        self._relayout_metric_cards()
+        full = [specification[0] for specification in CHARTS]
+        compact = ["能源 / Energy", "购电 / Grid", "逐时 / Period", "累计 / Total", "SOC"]
+        for index, title in enumerate(full):
+            self.notebook.tab(index, text=title)
+        if self.notebook.winfo_reqwidth() > event.width - 36:
+            for index, title in enumerate(compact):
+                self.notebook.tab(index, text=title)
+
+    def _relayout_metric_cards(self, _event=None):
+        if not self._cards:
+            return
+        available = max(1, self._viewport.winfo_width() - 36)
+        requested = max(card.winfo_reqwidth() for card in self._cards)
+        columns = min(3, max(1, (available + 10) // (requested + 10)))
+        if columns == self._card_columns:
+            return
+        for card in self._cards:
+            card.grid_forget()
+        for column in range(3):
+            self.metric_frame.columnconfigure(column, weight=1 if column < columns else 0)
+        for index, card in enumerate(self._cards):
+            card.grid(row=index // columns, column=index % columns, padx=(0, 10),
+                      pady=(0, 8), sticky="ew")
+        self._card_columns = columns
 
     def _quality_text(self, message):
         self.quality.configure(state="normal")
@@ -203,6 +266,7 @@ class EnergyDesktop:
     def _invalidate(self, *_):
         if self._cancel is not None:
             self._cancel.set()
+        self._stop_progress()
         self._generation += 1
         self._cancel = None
         self._active_kind = None
@@ -221,6 +285,8 @@ class EnergyDesktop:
         cancel = threading.Event()
         self._cancel = cancel
         self._active_kind = kind
+        self.progress.pack(fill="x", pady=(2, 0))
+        self.progress.start(15)
 
         def worker():
             try:
@@ -241,6 +307,7 @@ class EnergyDesktop:
                 break
             if generation != self._generation:
                 continue
+            self._stop_progress()
             self._cancel = None
             self._active_kind = None
             try:
@@ -253,6 +320,10 @@ class EnergyDesktop:
             except Exception as exc:
                 self._show_failure(kind, exc)
         self._poll_id = self.root.after(50, self._poll)
+
+    def _stop_progress(self):
+        self.progress.stop()
+        self.progress.pack_forget()
 
     def _show_failure(self, kind, error):
         self._clear_results()
@@ -267,6 +338,7 @@ class EnergyDesktop:
         self._generation += 1
         if self._cancel is not None:
             self._cancel.set()
+        self._stop_progress()
         self.root.after_cancel(self._poll_id)
         self.root.destroy()
 
@@ -321,6 +393,8 @@ class EnergyDesktop:
 
     def _show_result(self, result):
         try:
+            if not result.chart["timestamps"]:
+                raise ValueError("empty time series")
             for specification in CHARTS:
                 chart_values(result.chart, specification)
             for key in self.metric_labels:
@@ -335,6 +409,7 @@ class EnergyDesktop:
             baseline = self.chart["metrics"]["baseline"][key]
             pair[0].configure(text=f"{optimized:,.2f}")
             pair[1].configure(text=f"{baseline:,.2f}")
+        self._relayout_metric_cards()
         for canvas, spec in self.chart_canvases:
             self._draw(canvas, spec)
         self.run_button.configure(state="normal")
@@ -350,11 +425,16 @@ class EnergyDesktop:
                                fill=MUTED, font=("Microsoft YaHei UI", 11), justify="center")
             return
         stamps, series, unit = chart_values(self.chart, specification)
-        left, right, top, bottom = 64, width - 28, 46, height - 55
+        scale = max(1, float(self.root.tk.call("tk", "scaling")) / 1.333)
+        left, right = 64, width - 28
+        top = max(46, round(44 * scale))
+        bottom = height - max(78, round(75 * scale))
         maximum = max((max(values) for _, _, values in series), default=0)
         maximum = max(maximum * 1.1, 1)
         canvas.create_line(left, top, left, bottom, right, bottom, fill="#9CB0BB")
-        canvas.create_text(left, 20, text=unit, anchor="w", fill=MUTED,
+        canvas.create_text(left, 20, text=specification[0], anchor="w", fill=INK,
+                           font=("Microsoft YaHei UI", 11, "bold"))
+        canvas.create_text(right, 20, text=unit, anchor="e", fill=MUTED,
                            font=("Segoe UI", 10))
         for index in range(5):
             y = bottom - (bottom - top) * index / 4
@@ -375,14 +455,18 @@ class EnergyDesktop:
                                    coords[1] + 3, fill=color, outline=color)
         for index in sorted({0, len(stamps) // 2, len(stamps) - 1}):
             x = left + (right - left) * index / span
-            canvas.create_text(x, bottom + 19, text=stamps[index][5:],
+            stamp = stamps[index]
+            offset = stamp[-6:] if len(stamp) >= 6 and stamp[-6] in "+-" else "+00:00"
+            label = f"{stamp[5:10]} {stamp[11:16]}\nUTC{offset}"
+            canvas.create_text(x, bottom + 27 * scale, text=label,
                                anchor="w" if index == 0 else "e" if index == len(stamps) - 1
                                else "center", fill=MUTED, font=("Segoe UI", 9))
         x = left
         legend_spacing = max(125, min(190, (right - left) // max(1, len(series))))
         for label, color, _ in series:
-            canvas.create_line(x, height - 18, x + 20, height - 18, fill=color, width=3)
-            canvas.create_text(x + 26, height - 18, text=label, anchor="w", fill=INK,
+            legend_y = height - 20 * scale
+            canvas.create_line(x, legend_y, x + 20, legend_y, fill=color, width=3)
+            canvas.create_text(x + 26, legend_y, text=label, anchor="w", fill=INK,
                                font=("Microsoft YaHei UI", 9))
             x += legend_spacing
 

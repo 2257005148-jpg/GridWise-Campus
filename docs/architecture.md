@@ -32,3 +32,5 @@ v0.2.0 验收复核：CSV 入口为只读，质量报告与完整时序分离；
 `desktop.py (Tkinter) → data.import_energy_csv → dashboard.build_scenario → cli.run (既有 Pyomo + HiGHS) → audit_exports.py (独立子进程) → data.prepare_visualization_data → Tkinter Canvas`。质量失败时不求解；独立审计失败时不绘图。临时运行文件自动清理，原始 CSV 不写入。合成设备参数沿用 `examples/synthetic-day.json`；交互式求解上限 96 时段。Tkinter 仅呈现既有指标和时序，不实现新的目标函数或指标公式。 / The desktop is an offline orchestration and presentation layer over existing validation, solver, audit and chart-preparation interfaces.
 
 v0.3.1：质量检查和对比调度由后台工作线程执行；线程只传结果到队列，所有 Tk 控件更新留在主线程。求解 CLI 与审计器均为可取消、限时的子进程；换输入与关闭窗口设置取消事件，过期队列结果按代次丢弃。任一环节失败即清空卡片和图表，临时目录由上下文管理器清理。 / Background workers pass results through a queue; Tk updates stay on the main thread. Cancel events and generation IDs prevent stale results, while bounded subprocesses and a temporary-directory context contain solver and audit work.
+
+v0.3.2：仅调整 Tk 呈现层。页面由可滚动视口容纳内容，图表保留可读高度；页签在宽度不足时使用短标题，完整双语标题仍在图内。指标卡按视口宽度在三、二或一列间重排。图表时间标签分行显示日期、时刻与 UTC 偏移。 / Presentation changes keep charts reachable and metric cards readable as the window or Tk font scaling changes; model, data preparation and audit remain separate.
