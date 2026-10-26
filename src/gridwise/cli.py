@@ -16,6 +16,7 @@ from .environment import run_environment
 
 
 MODEL_FAMILY = "cost-mip-v1"
+PEAK_MODEL_FAMILY = "peak-cap-mip-v1"
 EXPORT_NAMES = ("summary.json", "optimized.csv", "baseline.csv", "grid-purchase.svg")
 
 
@@ -94,10 +95,10 @@ def _publish(stage: Path, output_dir: Path, input_path: Path, overwrite: bool) -
         raise
 
 
-def model_version() -> str:
+def model_version(family: str = MODEL_FAMILY) -> str:
     source = Path(__file__).with_name("core.py").read_bytes()
     normalized = source.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
-    return f"{MODEL_FAMILY}+sha256.{hashlib.sha256(normalized).hexdigest()}"
+    return f"{family}+sha256.{hashlib.sha256(normalized).hexdigest()}"
 
 
 def git_provenance() -> tuple[str, str]:
@@ -139,7 +140,8 @@ def _chart(results: dict) -> str:
             '<text x="270" y="305" fill="#0f766e" font-size="13">Optimized / 储能优化</text></svg>')
 
 
-def run(input_path: Path, output_dir: Path, solver_name="appsi_highs", *, overwrite=False) -> dict:
+def run(input_path: Path, output_dir: Path, solver_name="appsi_highs", *,
+        overwrite=False, peak_cap_kw=None) -> dict:
     input_path = Path(input_path)
     output_dir = Path(os.path.abspath(output_dir))
     _check_destination(input_path, output_dir, overwrite)
@@ -147,11 +149,16 @@ def run(input_path: Path, output_dir: Path, solver_name="appsi_highs", *, overwr
     scenario = parse_scenario(json.loads(source_bytes.decode("utf-8-sig")))
     scenario_sha256 = "sha256:" + hashlib.sha256(source_bytes).hexdigest()
     git_commit, source_state = git_provenance()
-    optimized = solve(scenario, solver_name=solver_name)
+    optimized = solve(scenario, solver_name=solver_name, peak_cap_kw=peak_cap_kw)
     baseline = solve(scenario, solver_name=solver_name, with_battery=False)
-    results = {"run": {"model_version": model_version(), "git_commit": git_commit,
+    run_metadata = {"model_version": model_version(
+                        PEAK_MODEL_FAMILY if peak_cap_kw is not None else MODEL_FAMILY),
+                    "git_commit": git_commit,
                        "source_state": source_state, "scenario_sha256": scenario_sha256,
-                       "solver_name": solver_name, "status": "optimal", **run_environment()},
+                       "solver_name": solver_name, "status": "optimal", **run_environment()}
+    if peak_cap_kw is not None:
+        run_metadata.update(optimization_mode="peak_cap", peak_cap_kw=float(peak_cap_kw))
+    results = {"run": run_metadata,
                "optimized": optimized, "baseline": baseline}
     _check_destination(input_path, output_dir, overwrite)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -193,9 +200,12 @@ def main() -> None:
     parser.add_argument("output", type=Path, help="output directory / 输出目录")
     parser.add_argument("--overwrite", action="store_true",
                         help="replace existing export files / 显式替换已有导出文件")
+    parser.add_argument("--peak-cap-kw", type=float,
+                        help="optional per-period grid import cap in kW for storage optimization / 储能方案逐时购电上限")
     args = parser.parse_args()
     try:
-        results = run(args.input, args.output, overwrite=args.overwrite)
+        results = run(args.input, args.output, overwrite=args.overwrite,
+                      peak_cap_kw=args.peak_cap_kw)
     except (InputError, SolverError, OSError, ValueError) as exc:
         parser.exit(2, f"gridwise: {exc}\n")
     for name in ("optimized", "baseline"):

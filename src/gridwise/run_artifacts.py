@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -23,10 +24,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 AUDITOR = ROOT / "tools" / "audit_exports.py"
 FORMAT_VERSION = 1
+PEAK_FORMAT_VERSION = 2
 RUN_FILES = ("scenario.json", "optimized.csv", "baseline.csv", "summary.json",
              "grid-purchase.svg")
 METADATA_FIELDS = ("model_version", "git_commit", "source_state", "scenario_sha256",
                    "solver_name", "status")
+PEAK_METADATA_FIELDS = (*METADATA_FIELDS, "optimization_mode", "peak_cap_kw")
 MAX_FILE_BYTES = 32 * 1024 * 1024
 MAX_TOTAL_BYTES = 96 * 1024 * 1024
 MAX_MANIFEST_BYTES = 64 * 1024
@@ -111,7 +114,7 @@ def _parse_json(payload: bytes, where: Path) -> dict:
     return parsed
 
 
-def _metadata(summary: dict) -> dict[str, str]:
+def _metadata(summary: dict) -> dict[str, str | float]:
     run = summary.get("run")
     if not isinstance(run, dict):
         raise RunArtifactError("summary.json: missing run metadata")
@@ -123,25 +126,39 @@ def _metadata(summary: dict) -> dict[str, str]:
         metadata[field] = value
     if metadata["status"] != "optimal":
         raise RunArtifactError("summary.json: run.status is not optimal")
+    if "optimization_mode" in run or "peak_cap_kw" in run:
+        cap = run.get("peak_cap_kw")
+        if run.get("optimization_mode") != "peak_cap" or type(cap) not in (int, float) or \
+                not math.isfinite(cap) or not 0 <= cap <= 1_000_000_000_000:
+            raise RunArtifactError("summary.json: invalid peak-cap run metadata")
+        metadata.update(optimization_mode="peak_cap", peak_cap_kw=cap)
     return metadata
 
 
-def _manifest(files: dict[str, bytes], metadata: dict[str, str]) -> dict:
-    return {"format_version": FORMAT_VERSION, "metadata": metadata,
+def _manifest(files: dict[str, bytes], metadata: dict[str, str | float]) -> dict:
+    version = PEAK_FORMAT_VERSION if "optimization_mode" in metadata else FORMAT_VERSION
+    return {"format_version": version, "metadata": metadata,
             "files": [{"name": name, "size_bytes": len(files[name]),
                        "sha256": hashlib.sha256(files[name]).hexdigest()}
                       for name in RUN_FILES]}
 
 
-def _validate_manifest(manifest: dict) -> tuple[dict[str, str], list[dict]]:
+def _validate_manifest(manifest: dict) -> tuple[dict[str, str | float], list[dict]]:
     if set(manifest) != {"format_version", "metadata", "files"} or \
-       type(manifest["format_version"]) is not int or manifest["format_version"] != FORMAT_VERSION:
+       type(manifest["format_version"]) is not int or \
+       manifest["format_version"] not in (FORMAT_VERSION, PEAK_FORMAT_VERSION):
         raise RunArtifactError("manifest.json: unsupported or malformed format_version")
     metadata = manifest["metadata"]
-    if not isinstance(metadata, dict) or set(metadata) != set(METADATA_FIELDS) or \
-       any(not isinstance(value, str) or not value or len(value) > 256
-           for value in metadata.values()):
+    expected = PEAK_METADATA_FIELDS if manifest["format_version"] == PEAK_FORMAT_VERSION else METADATA_FIELDS
+    if not isinstance(metadata, dict) or set(metadata) != set(expected) or \
+       any(not isinstance(metadata[name], str) or not metadata[name] or len(metadata[name]) > 256
+           for name in METADATA_FIELDS):
         raise RunArtifactError("manifest.json: invalid metadata")
+    if manifest["format_version"] == PEAK_FORMAT_VERSION:
+        cap = metadata["peak_cap_kw"]
+        if metadata["optimization_mode"] != "peak_cap" or type(cap) not in (int, float) or \
+                not math.isfinite(cap) or not 0 <= cap <= 1_000_000_000_000:
+            raise RunArtifactError("manifest.json: invalid peak-cap metadata")
     entries = manifest["files"]
     if not isinstance(entries, list) or len(entries) != len(RUN_FILES):
         raise RunArtifactError("manifest.json: invalid file count")
@@ -257,7 +274,8 @@ def publish_run(scenario: Path, runs_parent: Path, *,
                 cancel_event: threading.Event | None = None,
                 timeout_seconds: float = 120,
                 solve_timeout_seconds: float | None = None,
-                audit_timeout_seconds: float | None = None) -> Path:
+                audit_timeout_seconds: float | None = None,
+                peak_cap_kw: float | None = None) -> Path:
     """Create a new run directory; leave failures incomplete for inspection."""
     solve_timeout = timeout_seconds if solve_timeout_seconds is None else solve_timeout_seconds
     audit_timeout = timeout_seconds if audit_timeout_seconds is None else audit_timeout_seconds
@@ -281,8 +299,11 @@ def publish_run(scenario: Path, runs_parent: Path, *,
         stage.mkdir()
         (stage / "scenario.json").write_bytes(source)
         event = cancel_event or threading.Event()
-        _execute([sys.executable, "-m", "gridwise.cli", str(stage / "scenario.json"),
-                  str(stage)], solve_timeout, event)
+        command = [sys.executable, "-m", "gridwise.cli", str(stage / "scenario.json"),
+                   str(stage)]
+        if peak_cap_kw is not None:
+            command.extend(("--peak-cap-kw", str(peak_cap_kw)))
+        _execute(command, solve_timeout, event)
         before_audit = {name: hashlib.sha256(_read_file(stage / name, MAX_FILE_BYTES)).digest()
                         for name in RUN_FILES}
         audit, _ = _execute([sys.executable, str(AUDITOR), str(stage / "scenario.json"),
@@ -345,12 +366,15 @@ def main() -> None:
     create = sub.add_parser("publish", help="solve, independently audit, publish a new run")
     create.add_argument("scenario", type=Path)
     create.add_argument("runs_parent", type=Path)
+    create.add_argument("--peak-cap-kw", type=float,
+                        help="optional storage grid-import cap in kW / 储能方案购电上限")
     verify = sub.add_parser("verify", help="verify marker, manifest and file bytes")
     verify.add_argument("run_directory", type=Path)
     args = parser.parse_args()
     try:
         if args.operation == "publish":
-            path = publish_run(args.scenario, args.runs_parent)
+            path = publish_run(args.scenario, args.runs_parent,
+                               peak_cap_kw=args.peak_cap_kw)
             print(f"PUBLISHED {path}")
         else:
             result = read_verified_run(args.run_directory)

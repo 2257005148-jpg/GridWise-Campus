@@ -49,3 +49,7 @@ v0.3.4：桌面入口沿用 v0.3.3 的有条件 Windows DPI 感知设置；取�
 ## v0.3.9 运行历史与读取复核 / History and read hardening
 
 新增标准库 `run_storage.py`，仅在用户显式保存时写入本地运行根目录偏好；启动时读取有界设置，恢复目录并异步刷新历史，失效时提示并使用原临时默认目录。`read_verified_run` 在完成五文件校验后再次检查运行目录身份、修改时间与精确条目集合，以拒绝验证期间可观察的目录变动。Tk 诊断脚本将 Tcl 初始化纳入异常捕获，并限制次数、每次超时及 JSON 输出大小。上述检查不能抵御可同时伪造清单的恶意本机写入者，也不提供断电持久性。/ An explicit local preference restores the selected root after restart. The reader now rechecks visible directory changes at the end of verification. The bounded Tk probe records initialization failures instead of losing its JSON result; adversarial-writer and power-loss guarantees remain out of scope.
+
+## v0.3.12 桌面削峰接入 / Desktop peak-cap integration
+
+Tk 主线程持有模式单选项、上限输入和结果策略栏；后台调用仍为 `dashboard.run_comparison → run_artifacts.publish_run → 独立 audit_exports.py → read_verified_run → prepare_visualization_data`。纯电费模式传入 `None`，峰值模式传入显式 kW 数值。运行中模式控件禁用；取消、关闭、代次隔离和错误队列沿用原生命周期。历史条目从已校验清单读取模式与上限，选择后再次安全读取并恢复显示。相对纯电费的成本只在同场景、同求解器、同模型源码摘要的已校验运行存在时计算；该差值不改变三项指标或模型目标。/ Policy selection remains a Tk presentation concern; solving, independent audit, verified publication and chart preparation stay in their existing layers. A compatible verified cost-only run is required for the optional cost delta.

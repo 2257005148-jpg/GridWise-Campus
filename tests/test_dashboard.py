@@ -43,6 +43,56 @@ def test_valid_synthetic_csv_runs_audited_comparison(tmp_path, monkeypatch):
     assert list(tmp_path.glob("gridwise-ui-*")) == []
 
 
+def test_peak_cap_comparison_publishes_verified_policy_and_metrics(tmp_path):
+    imported = import_energy_csv(SAMPLE, 1)
+    result = dashboard.run_comparison(imported, runs_root=tmp_path, peak_cap_kw=55)
+    assert result.optimization_mode == "peak_cap"
+    assert result.peak_cap_kw == 55
+    assert result.chart["metrics"]["optimized"]["peak_grid_kw"] <= 55 + 1e-5
+    assert result.chart["metrics"]["baseline"]["peak_grid_kw"] == pytest.approx(60)
+    verified = run_artifacts.read_verified_run(tmp_path / result.run_name)
+    summary = json.loads(verified.files["summary.json"])
+    assert summary["run"]["optimization_mode"] == "peak_cap"
+    assert summary["run"]["peak_cap_kw"] == 55
+
+
+def test_peak_cap_history_preserves_mode_and_parameter(tmp_path):
+    imported = import_energy_csv(SAMPLE, 1)
+    created = dashboard.run_comparison(imported, runs_root=tmp_path, peak_cap_kw=55)
+    entry = dashboard.list_run_history(tmp_path)[0]
+    assert entry.name == created.run_name
+    assert entry.optimization_mode == "peak_cap"
+    assert entry.peak_cap_kw == 55
+    loaded = dashboard.load_verified_comparison(imported, entry.name, tmp_path)
+    assert loaded.optimization_mode == "peak_cap"
+    assert loaded.peak_cap_kw == 55
+
+
+def test_peak_cap_cost_delta_requires_verified_same_input_cost_run(tmp_path):
+    imported = import_energy_csv(SAMPLE, 1)
+    without_reference = dashboard.run_comparison(
+        imported, runs_root=tmp_path / "isolated", peak_cap_kw=55)
+    assert without_reference.cost_mode_cost_cny is None
+
+    cost = dashboard.run_comparison(imported, runs_root=tmp_path / "paired")
+    peak = dashboard.run_comparison(imported, runs_root=tmp_path / "paired", peak_cap_kw=55)
+    assert peak.cost_mode_cost_cny == pytest.approx(
+        cost.chart["metrics"]["optimized"]["cost_cny"])
+    assert (peak.chart["metrics"]["optimized"]["cost_cny"] - peak.cost_mode_cost_cny
+            == pytest.approx(25.88891966759))
+    loaded = dashboard.load_verified_comparison(
+        imported, peak.run_name, tmp_path / "paired")
+    assert loaded.cost_mode_cost_cny == pytest.approx(peak.cost_mode_cost_cny)
+
+
+def test_peak_cap_above_scenario_grid_limit_fails_before_publication(tmp_path, monkeypatch):
+    imported = import_energy_csv(SAMPLE, 1)
+    monkeypatch.setattr(dashboard, "publish_run", lambda *_args, **_kwargs:
+                        pytest.fail("invalid cap must not publish"))
+    with pytest.raises(dashboard.DashboardError, match="exceeds scenario grid_max_kw"):
+        dashboard.run_comparison(imported, runs_root=tmp_path, peak_cap_kw=121)
+
+
 def test_invalid_quality_blocks_solver_and_charts(tmp_path, monkeypatch):
     path = tmp_path / "bad.csv"
     path.write_text(HEADER + "2026-01-01T00:00:00+00:00,,0,0.5\n", encoding="utf-8")

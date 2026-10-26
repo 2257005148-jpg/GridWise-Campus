@@ -83,8 +83,16 @@ def parse_scenario(data: dict) -> Scenario:
         raise InputError(f"missing or invalid scenario field: {exc}") from exc
 
 
-def solve(s: Scenario, *, solver_name="appsi_highs", with_battery=True) -> dict:
+def solve(s: Scenario, *, solver_name="appsi_highs", with_battery=True,
+          peak_cap_kw=None) -> dict:
     import pyomo.environ as pyo
+
+    if peak_cap_kw is not None:
+        peak_cap_kw = _number(peak_cap_kw, "peak_cap_kw")
+        if peak_cap_kw > s.grid_max_kw:
+            raise InputError("peak_cap_kw exceeds grid_max_kw")
+        if not with_battery:
+            raise InputError("peak_cap_kw applies only to the storage optimization")
 
     try:
         solver = pyo.SolverFactory(solver_name)
@@ -97,6 +105,8 @@ def solve(s: Scenario, *, solver_name="appsi_highs", with_battery=True) -> dict:
     m = pyo.ConcreteModel()
     m.T = pyo.RangeSet(0, n - 1)
     m.grid = pyo.Var(m.T, bounds=(0, s.grid_max_kw))
+    if peak_cap_kw is not None:
+        m.peak_cap = pyo.Constraint(m.T, rule=lambda _, t: m.grid[t] <= peak_cap_kw)
     m.charge = pyo.Var(m.T, bounds=(0, b.max_charge_kw if with_battery else 0))
     m.discharge = pyo.Var(m.T, bounds=(0, b.max_discharge_kw if with_battery else 0))
     m.pv_used = pyo.Var(m.T, bounds=lambda _, t: (0, s.pv_kw[t]))
@@ -129,11 +139,11 @@ def solve(s: Scenario, *, solver_name="appsi_highs", with_battery=True) -> dict:
               "grid_energy_kwh": sum(r["grid_kw"] * s.step_hours for r in rows),
               "peak_grid_kw": max(r["grid_kw"] for r in rows),
               "pv_curtailed_kwh": sum(r["pv_curtailed_kw"] * s.step_hours for r in rows)}
-    validate_result(s, answer)
+    validate_result(s, answer, peak_cap_kw=peak_cap_kw)
     return answer
 
 
-def validate_result(s: Scenario, answer: dict, tolerance=1e-5) -> None:
+def validate_result(s: Scenario, answer: dict, tolerance=1e-5, *, peak_cap_kw=None) -> None:
     """Check exported numbers with Python arithmetic, without consulting Pyomo."""
     rows = answer["rows"]
     if len(rows) != len(s.load_kw):
@@ -158,6 +168,8 @@ def validate_result(s: Scenario, answer: dict, tolerance=1e-5) -> None:
             raise ValueError(f"SOC flow failed at {t}")
         if r["soc_kwh"] > b.capacity_kwh + tolerance or r["grid_kw"] > s.grid_max_kw + tolerance:
             raise ValueError(f"capacity failed at {t}")
+        if peak_cap_kw is not None and r["grid_kw"] > peak_cap_kw + tolerance:
+            raise ValueError(f"peak cap failed at {t}")
         if r["charge_kw"] > b.max_charge_kw + tolerance or r["discharge_kw"] > b.max_discharge_kw + tolerance:
             raise ValueError(f"battery power failed at {t}")
         if min(r["charge_kw"], r["discharge_kw"]) > tolerance:

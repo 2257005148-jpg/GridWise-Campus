@@ -8,6 +8,8 @@
 
 目标 / Objective: `min Σ G[t] × p[t] × Δt`，仅计购电电费，不含需量费、退化、售电或排放。 / Minimize import cost only.
 
+v0.3.11 可选削峰上限模式 / Optional peak-cap mode: 显式传入 `K`（kW，`0 ≤ K ≤ Gmax`）时，仅对储能优化方案增加逐时约束 `G[t] ≤ K`；目标仍是上述纯电费最小化，无储能基线保持同一输入和原约束，不施加 `K`。未传入时保持原模型语义。`K` 导致不可行时报告求解失败，不自动放宽上限。/ With an explicit cap `K`, constrain each optimized period's import while retaining the cost objective. The no-storage baseline is unchanged. Infeasibility is reported, never relaxed.
+
 约束 / Constraints:
 
 ```text
@@ -19,5 +21,7 @@ E[last] = Eend
 ```
 
 无储能基线同一输入，但 `C=D=0` 且终端能量保持 `E0`。两者都是可行性与成本优化问题；当基线因购电上限不可行时不生成比较结果。 / The no-storage baseline fixes charge and discharge to zero; comparison is withheld if it is infeasible.
+
+三项比较指标独立定义 / Independent metrics: `total_cost_cny = Σ G[t]p[t]Δt`，`grid_energy_kwh = Σ G[t]Δt`，`peak_grid_kw = max G[t]`。峰值上限是逐时功率约束，并非需量费或新的目标项；电费、购电量和峰值可能朝不同方向变化。/ The cap constrains period power; it does not add a demand charge or peak term to the objective.
 
 模型未表示储能自放电、电网出口、线路损耗、光伏预测误差或真实控制器。优化效果仅针对本输入与假设，不能推断校园节能量。 / Self-discharge, exports, losses, uncertainty and real controls are outside this model. Cost difference is not a campus energy-saving claim.

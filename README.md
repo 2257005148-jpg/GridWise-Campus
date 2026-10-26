@@ -1,6 +1,6 @@
 # 长理智慧能源管理系统 / GridWise Campus
 
-面向高校的通用能源分析与优化项目。现有离线原型支持合成数据的纯电费调度、无储能基线、CSV 质量检查及本机交互式可视化；无学校数据接口、实时控制或认证声明。 / The offline prototype includes cost-only dispatch, a no-storage baseline, CSV quality checks and a local interactive desktop view. It has no campus connection or control claim.
+面向高校的通用能源分析与优化项目。现有离线原型支持合成数据的纯电费调度、显式峰值上限调度、无储能基线、CSV 质量检查及本机交互式可视化；无学校数据接口、实时控制或认证声明。 / The offline prototype includes cost-only and explicit peak-cap dispatch, a no-storage baseline, CSV quality checks and a local interactive desktop view. It has no campus connection or control claim.
 
 ## 已实现 / Implemented
 
@@ -10,6 +10,7 @@
 - JSON、CSV 和 SVG 导出 / JSON, CSV and SVG export.
 - 只读 CSV 导入、缺失值与时间完整性报告、图表数据准备 / Read-only CSV quality reporting and chart-data preparation.
 - 本机双语交互原型：文件选择、质量拦截、优化/基线对比与五张图 / Local bilingual desktop prototype with file selection, quality gating, comparison and five charts.
+- 桌面端显式选择纯电费或峰值上限模式，记录并复核运行策略 / Desktop selection of cost-only or peak-cap policy with traceable verified metadata.
 
 ## 安装与运行 / Install and run
 
@@ -34,9 +35,13 @@ v0.3.6 的故障注入确认逐文件发布期间可出现新旧混合结果；�
 
 v0.3.7 可选的[已校验运行目录](docs/run-artifact-contract.md)入口：`python -m gridwise.run_artifacts publish examples/synthetic-day.json outputs/runs`，随后对输出的 `run-...` 目录执行 `python -m gridwise.run_artifacts verify RUN_DIR`。发布前执行独立审计；读取端检查完成标记、清单及全部文件哈希。旧 CLI 用法保持不变。 / The optional verified-run interface publishes a unique run after independent audit and reads it only after marker, manifest and file checks. The legacy CLI remains compatible.
 
+v0.3.11 可显式执行 `python -m gridwise.cli examples/synthetic-day.json outputs/peak55 --peak-cap-kw 55`，或在 `gridwise.run_artifacts publish` 命令后追加同一参数。只约束储能优化方案的逐时购电功率；目标仍为最小电费，基线不受该上限约束。默认不传参数时保持原纯电费方案。分别查看 CNY 电费、kWh 购电量和 kW 峰值；一种指标改善不代表其他指标改善。/ The opt-in cap constrains storage-run import per period while retaining cost minimization. The no-storage baseline remains unconstrained by this additional cap.
+
 桌面原型默认载入合成 CSV；也可主动选择本地 CSV 并填写小时步长。先点“检查数据”，通过后再点“运行对比”。使用合成场景的设备参数；每次交互式求解最多 96 时段。v0.3.8 起，运行结果发布到界面指定的本地运行根目录（默认系统临时目录下的 `gridwise-campus-runs`），独立审计、完成标记和清单校验通过后才显示。可刷新运行历史，区分有效、未完成和损坏目录；选择历史运行时重新校验文件，并要求当前已检查 CSV 与结果逐时一致。失败目录不会自动删除。检查与调度在后台执行，关闭窗口或更换输入会取消在途运行；求解和独立审计各有 120 秒上限。需要有可用的图形桌面环境。详情见[界面设计与选型](docs/v0.3-desktop-design.md)及[运行目录契约](docs/run-artifact-contract.md)。 / The desktop checks CSV quality, then publishes each comparison into a unique local run directory. It displays charts only after independent audit and verified reading. Refreshing history classifies valid, incomplete and damaged runs; loading one rechecks its files and matches its series against the currently checked CSV. Failed directories are retained for inspection. Solver and auditor each have a 120-second limit.
 
 v0.3.9 可在界面选择**已存在**的受控本地目录，再点击“保存目录 / Save root”；重启后会恢复该路径并刷新历史。默认临时目录不变，保存新路径不会搬迁旧运行。设置不可用时显示原因并回退到临时目录。保留、备份和手动清理说明见[运行历史保存](docs/run-history-storage.md)。/ Select an existing controlled local directory and explicitly save it to restore that root after restart. The temporary default remains; saving does not move old runs. See the storage guide for retention and backup.
+
+v0.3.12 桌面默认仍为“纯电费优化”。选择“峰值上限优化”后输入有限、非负且不超过场景 `grid_max_kw` 的 kW 数值；只有独立审计、格式 2 清单及安全读取通过才显示结果。策略栏显示设置上限、实际峰值和达标状态。只有运行历史中存在同场景指纹、同求解器、同模型源码摘要且重新校验通过的纯电费结果时，才显示相对电费差额；否则明确显示无可靠对照。/ The desktop now exposes the opt-in cap without changing the default. Cost delta is shown only against a verified, same-input and same-model cost-only run.
 
 v0.3.2 为小窗口和高 DPI 字体增加页面纵向滚动、按可用宽度排列的指标卡、短页签与保留时区的两行时间标签。v0.3.3 在创建 Tk 窗口前检查 Windows 进程的 DPI 感知状态；仅在仍为 unaware 时启用每显示器感知，不覆盖已有设置。只读日志可通过 Tab 到达，在操作控件上按 Page Up/Down 可滚动页面。忙碌条只表示任务正在运行。真实跨显示器 DPI 行为仍需有不同 DPI 显示器的环境验收。 / The desktop scrolls vertically, reflows metric cards, shortens chart tabs, and retains time zones on the axis. v0.3.3 enables per-monitor DPI awareness before Tk window creation only when the process is still unaware. The read-only log is reachable by Tab, and Page Up/Down scrolls the page from action controls. Native cross-monitor behavior remains unverified.
 

@@ -20,6 +20,7 @@ from pathlib import Path
 
 TOL = Decimal("0.00001")
 MODEL_FAMILY = "cost-mip-v1"
+PEAK_MODEL_FAMILY = "peak-cap-mip-v1"
 ROOT = Path(__file__).resolve().parents[1]
 LOCK_PATH = ROOT / "requirements" / "verified-win-py312.txt"
 RUNTIME_PACKAGES = ("pyomo", "highspy", "numpy", "ply")
@@ -46,13 +47,13 @@ def fail(where, detail):
     raise AuditError(f"{where}: {detail}")
 
 
-def model_version():
+def model_version(family=MODEL_FAMILY):
     try:
         source = (ROOT / "src" / "gridwise" / "core.py").read_bytes()
     except OSError as exc:
         fail("model source", f"cannot read core.py: {exc}")
     normalized = source.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
-    return f"{MODEL_FAMILY}+sha256.{hashlib.sha256(normalized).hexdigest()}"
+    return f"{family}+sha256.{hashlib.sha256(normalized).hexdigest()}"
 
 
 def git_provenance():
@@ -259,10 +260,21 @@ def audit(scenario_path, optimized_path, baseline_path, summary_path):
     summary = read_json(summary_path)
     exact_fields(summary, ("run", "optimized", "baseline"), "summary")
     run = field(summary, "run", "summary")
-    exact_fields(run, ("model_version", "git_commit", "source_state", "scenario_sha256",
-                       "solver_name", "status", "python_version", "operating_system",
-                       "solver_version", "dependency_versions", "dependency_lock_sha256"), "summary.run")
-    expected_version = model_version()
+    peak_mode = isinstance(run, dict) and ("optimization_mode" in run or "peak_cap_kw" in run)
+    run_fields = ("model_version", "git_commit", "source_state", "scenario_sha256",
+                  "solver_name", "status", "python_version", "operating_system",
+                  "solver_version", "dependency_versions", "dependency_lock_sha256")
+    exact_fields(run, (*run_fields, "optimization_mode", "peak_cap_kw") if peak_mode
+                 else run_fields, "summary.run")
+    peak_cap = None
+    if peak_mode:
+        if field(run, "optimization_mode", "summary.run") != "peak_cap":
+            fail("summary.run.optimization_mode", "must be peak_cap")
+        peak_cap = number(field(run, "peak_cap_kw", "summary.run"),
+                          "summary.run.peak_cap_kw", minimum=0)
+        if peak_cap > grid_max:
+            fail("summary.run.peak_cap_kw", "exceeds scenario.grid_max_kw")
+    expected_version = model_version(PEAK_MODEL_FAMILY if peak_mode else MODEL_FAMILY)
     if field(run, "model_version", "summary.run") != expected_version:
         fail("summary.run.model_version", f"does not match current core.py ({expected_version})")
     expected_commit, expected_state = git_provenance()
@@ -372,6 +384,8 @@ def audit(scenario_path, optimized_path, baseline_path, summary_path):
                                   ("pv_used_kw", row["pv_available_kw"])):
                 if row[name] > maximum + TOL:
                     fail(f"{where}.{name}", f"exceeds maximum {maximum}")
+            if enabled and peak_cap is not None and row["grid_kw"] > peak_cap + TOL:
+                fail(f"{where}.grid_kw", f"peak cap {peak_cap} exceeded")
             if min(row["charge_kw"], row["discharge_kw"]) > TOL:
                 fail(where, "simultaneous charge and discharge")
             if not enabled and (abs(row["charge_kw"]) > TOL or abs(row["discharge_kw"]) > TOL):

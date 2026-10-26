@@ -24,6 +24,19 @@ def test_example_solves_and_exports(tmp_path):
     validate_result(parse_scenario(raw()), results["optimized"])
 
 
+def test_explicit_peak_cap_shaves_sample_below_no_storage_baseline():
+    scenario = parse_scenario(raw())
+    capped = solve(scenario, peak_cap_kw=55)
+    baseline = solve(scenario, with_battery=False)
+    validate_result(scenario, capped, peak_cap_kw=55)
+    assert capped["status"] == "optimal"
+    assert capped["peak_grid_kw"] <= 55 + 1e-5
+    assert capped["peak_grid_kw"] < baseline["peak_grid_kw"]
+    assert capped["total_cost_cny"] >= 131.01108033241 - 1e-5
+    assert capped["total_cost_cny"] <= 162.7700831025 + 1e-5
+    assert all(row["grid_kw"] <= 55 + 1e-5 for row in capped["rows"])
+
+
 @pytest.mark.parametrize("load,pv,initial", [(0, 0, 0), (10, 0, 0), (0, 10, 80), (10, 0, 80)])
 def test_energy_boundaries(load, pv, initial):
     data = raw()

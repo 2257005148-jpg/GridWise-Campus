@@ -34,6 +34,8 @@ def verify_restart(config, run_name):
         app._load_history()
         wait(root, lambda: app._active_kind is None)
         assert app.chart is not None
+        assert app.optimization_mode.get() == "peak_cap"
+        assert app.peak_cap.get() == "55"
         print("RESTART_HISTORY_OK")
     finally:
         app._on_close()
@@ -59,9 +61,19 @@ def main():
             app._run()
             wait(root, lambda: app._active_kind is None)
             assert app.chart is not None, app.status.get()
+            cost_run_name = app.selected_run.get().split(" [", 1)[0]
+            assert (Path(temporary) / "runs" / cost_run_name / "COMPLETE").exists()
+            print("COST_VALID", cost_run_name, app.chart["metrics"])
+
+            app.optimization_mode.set("peak_cap")
+            app.peak_cap.set("55")
+            app._run()
+            wait(root, lambda: app._active_kind is None)
+            assert app.chart["metrics"]["optimized"]["peak_grid_kw"] <= 55 + 1e-5
+            assert "+25.89 CNY" in app.policy_result.get()
             run_name = app.selected_run.get().split(" [", 1)[0]
             assert (Path(temporary) / "runs" / run_name / "COMPLETE").exists()
-            print("VALID", run_name, app.chart["metrics"])
+            print("PEAK_VALID", run_name, app.chart["metrics"], app.policy_result.get())
 
             app._refresh_history()
             wait(root, lambda: app._active_kind is None)
@@ -95,10 +107,32 @@ def main():
     print("GUI_SMOKE_PASSED")
 
 
+def show_peak_result():
+    """Open a real audited cost/peak comparison for manual visual inspection."""
+    with tempfile.TemporaryDirectory(prefix="gridwise-v0312-preview-") as temporary:
+        root = tk.Tk()
+        app = EnergyDesktop(root, runs_root=Path(temporary) / "runs",
+                            config_path=Path(temporary) / "desktop.json")
+        root.geometry("1180x940")
+        app._check()
+        wait(root, lambda: app._active_kind is None)
+        app._run()
+        wait(root, lambda: app._active_kind is None)
+        app.optimization_mode.set("peak_cap")
+        app.peak_cap.set("55")
+        app._run()
+        wait(root, lambda: app._active_kind is None)
+        assert app.chart is not None
+        assert "+25.89 CNY" in app.policy_result.get()
+        root.mainloop()
+
+
 if __name__ == "__main__":
     if len(sys.argv) == 4 and sys.argv[1] == "--verify-restart":
         verify_restart(Path(sys.argv[2]), sys.argv[3])
+    elif len(sys.argv) == 2 and sys.argv[1] == "--show-peak":
+        show_peak_result()
     elif len(sys.argv) == 1:
         main()
     else:
-        raise SystemExit("usage: smoke_desktop_verified.py")
+        raise SystemExit("usage: smoke_desktop_verified.py [--show-peak]")

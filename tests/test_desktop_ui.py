@@ -91,6 +91,85 @@ def test_run_keeps_tk_responsive_and_rejects_duplicate_clicks(monkeypatch):
         close_desktop(root, app)
 
 
+def test_peak_cap_mode_rejects_invalid_input_and_passes_valid_cap(monkeypatch):
+    root, app = new_desktop()
+    calls = []
+
+    def capture(_imported, **kwargs):
+        calls.append(kwargs.get("peak_cap_kw"))
+        raise DashboardError("synthetic stop after capture")
+
+    monkeypatch.setattr(desktop, "run_comparison", capture)
+    try:
+        assert app.optimization_mode.get() == "cost"
+        assert app.peak_cap_entry.instate(["disabled"])
+        app.optimization_mode.set("peak_cap")
+        root.update()
+        assert app.peak_cap_entry.instate(["!disabled"])
+
+        for invalid in ("", "not-a-number", "NaN", "Infinity", "-1", "1e13"):
+            app.peak_cap.set(invalid)
+            app._run()
+            root.update()
+            assert calls == []
+            assert app.chart is None
+            assert "上限" in app.status.get() or "cap" in app.status.get()
+
+        app.peak_cap.set("55")
+        app._run()
+        pump(root, lambda: app._active_kind is None)
+        assert calls == [55.0]
+        assert app.chart is None
+        assert "失败" in app.status.get() or "failed" in app.status.get()
+    finally:
+        close_desktop(root, app)
+
+
+def test_desktop_peak_cap_run_shows_verified_metrics_and_cost_reference(tmp_path):
+    runs_root = tmp_path / "runs"
+    root, app = new_desktop(runs_root=runs_root)
+    source_before = desktop.SAMPLE.read_bytes()
+    try:
+        app._run()
+        pump(root, lambda: app._active_kind is None, seconds=25)
+        assert app.chart["metrics"]["optimized"]["cost_cny"] == pytest.approx(131.0110803324)
+
+        app.optimization_mode.set("peak_cap")
+        app.peak_cap.set("55")
+        app._run()
+        pump(root, lambda: app._active_kind is None, seconds=25)
+        assert app.chart["metrics"]["optimized"]["cost_cny"] == pytest.approx(156.9)
+        assert app.chart["metrics"]["optimized"]["grid_energy_kwh"] == pytest.approx(243.9)
+        assert app.chart["metrics"]["optimized"]["peak_grid_kw"] == pytest.approx(55)
+        assert app.chart["metrics"]["baseline"]["peak_grid_kw"] == pytest.approx(60)
+        text = app.policy_result.get()
+        assert "55.00 kW" in text
+        assert "PASS" in text
+        assert "+25.89 CNY" in text
+        assert len(app._history_entries) == 2
+        assert {entry.optimization_mode for entry in app._history_entries.values()} == {
+            "cost", "peak_cap"}
+        assert desktop.SAMPLE.read_bytes() == source_before
+    finally:
+        close_desktop(root, app)
+
+
+def test_infeasible_peak_cap_never_shows_success(tmp_path):
+    runs_root = tmp_path / "runs"
+    root, app = new_desktop(runs_root=runs_root)
+    try:
+        app.optimization_mode.set("peak_cap")
+        app.peak_cap.set("0")
+        app._run()
+        pump(root, lambda: app._active_kind is None, seconds=25)
+        assert app.chart is None
+        assert "失败" in app.status.get() or "failed" in app.status.get()
+        assert "AUDIT PASSED" not in app.status.get()
+        assert all(not (path / "COMPLETE").exists() for path in runs_root.glob("run-*"))
+    finally:
+        close_desktop(root, app)
+
+
 def test_input_change_discards_in_flight_success(monkeypatch, tmp_path):
     root, app = new_desktop()
     release = threading.Event()
@@ -430,6 +509,43 @@ def test_saved_runs_root_restores_history_after_desktop_restart(tmp_path):
         pump(second, lambda: reopened._active_kind is None, seconds=10)
         assert reopened.chart is not None
         assert reopened.chart["metrics"]["optimized"]["cost_cny"] == pytest.approx(131.01108)
+    finally:
+        close_desktop(second, reopened)
+
+
+def test_saved_peak_cap_history_restores_mode_after_restart(tmp_path):
+    global _interpreter
+    runs_root = tmp_path / "persistent-runs"
+    runs_root.mkdir()
+    config = tmp_path / "settings" / "desktop.json"
+    first, app = new_desktop(runs_root=runs_root, config_path=config)
+    try:
+        app._save_runs_root()
+        app.optimization_mode.set("peak_cap")
+        app.peak_cap.set("55")
+        app._run()
+        pump(first, lambda: app._active_kind is None, seconds=25)
+        assert app.chart is not None
+        name = app.selected_run.get().split(" [", 1)[0]
+    finally:
+        close_desktop(first, app)
+
+    second = tk.Toplevel(_interpreter)
+    second.withdraw()
+    reopened = desktop.EnergyDesktop(second, config_path=config)
+    try:
+        pump(second, lambda: reopened._active_kind is None, seconds=10)
+        assert reopened._history_entries[name].optimization_mode == "peak_cap"
+        assert reopened._history_entries[name].peak_cap_kw == 55
+        reopened._check()
+        pump(second, lambda: reopened.imported is not None, seconds=10)
+        reopened.selected_run.set(reopened._history_label(reopened._history_entries[name]))
+        reopened._load_history()
+        pump(second, lambda: reopened._active_kind is None, seconds=10)
+        assert reopened.chart["metrics"]["optimized"]["peak_grid_kw"] == pytest.approx(55)
+        assert reopened.optimization_mode.get() == "peak_cap"
+        assert reopened.peak_cap.get() == "55"
+        assert "55.00 kW" in reopened.policy_result.get()
     finally:
         close_desktop(second, reopened)
 

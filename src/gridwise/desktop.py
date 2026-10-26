@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import queue
+import math
 import sys
 import threading
 from pathlib import Path
@@ -88,6 +89,11 @@ class EnergyDesktop:
         root.configure(bg=PAPER)
         self.path = tk.StringVar(value=str(SAMPLE))
         self.step = tk.StringVar(value="1")
+        self.optimization_mode = tk.StringVar(value="cost")
+        self.peak_cap = tk.StringVar(value="55")
+        self.policy_result = tk.StringVar(
+            value="模式：纯电费优化 / Mode: cost-only optimization")
+        self._updating_policy = False
         self.config_path = config_path or default_config_path()
         self._config_error = None
         saved = None
@@ -124,6 +130,8 @@ class EnergyDesktop:
         self.path.trace_add("write", self._invalidate)
         self.step.trace_add("write", self._invalidate)
         self.runs_root.trace_add("write", self._invalidate_root)
+        self.optimization_mode.trace_add("write", self._policy_changed)
+        self.peak_cap.trace_add("write", self._policy_changed)
         self._poll_id = root.after(50, self._poll)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         root.bind("<Next>", self._scroll_keyboard)
@@ -182,6 +190,28 @@ class EnergyDesktop:
         ttk.Entry(controls, textvariable=self.step, width=12).grid(
             row=1, column=2, padx=(16, 0), sticky="w")
         controls.columnconfigure(0, weight=1)
+
+        policy = ttk.LabelFrame(outer, text="优化模式 / Optimization mode", padding=(12, 8))
+        policy.pack(fill="x", pady=(12, 0))
+        self.cost_mode_button = ttk.Radiobutton(
+            policy, text="纯电费优化 / Cost-only", variable=self.optimization_mode,
+            value="cost")
+        self.cost_mode_button.grid(row=0, column=0, sticky="w")
+        self.peak_mode_button = ttk.Radiobutton(
+            policy, text="峰值上限优化 / Peak cap", variable=self.optimization_mode,
+            value="peak_cap")
+        self.peak_mode_button.grid(row=0, column=1, sticky="w", padx=(18, 0))
+        ttk.Label(policy, text="峰值上限 / Cap (kW)").grid(
+            row=0, column=2, sticky="e", padx=(24, 6))
+        self.peak_cap_entry = ttk.Entry(policy, textvariable=self.peak_cap, width=12,
+                                        state="disabled")
+        self.peak_cap_entry.grid(row=0, column=3, sticky="w")
+        ttk.Label(
+            policy,
+            text="削峰可能增加电费；购电量变化不等于节能 / Peak reduction may raise cost; energy changes are not savings.",
+            style="Sub.TLabel", wraplength=760).grid(
+                row=1, column=0, columnspan=4, sticky="w", pady=(7, 0))
+        policy.columnconfigure(1, weight=1)
 
         actions = ttk.Frame(outer)
         actions.pack(fill="x", pady=(12, 4))
@@ -274,6 +304,10 @@ class EnergyDesktop:
             baseline_label.pack(side="right")
             self.metric_labels[key] = (optimized_label, baseline_label)
 
+        self.policy_result_label = ttk.Label(outer, textvariable=self.policy_result,
+                                              style="Sub.TLabel", wraplength=900)
+        self.policy_result_label.pack(anchor="w", fill="x", pady=(0, 10))
+
         chart_height = max(300, round(300 * float(self.root.tk.call("tk", "scaling")) / 1.333))
         self.notebook = ttk.Notebook(outer, height=chart_height)
         self.notebook.pack(fill="x")
@@ -346,6 +380,10 @@ class EnergyDesktop:
 
     def _clear_results(self):
         self.chart = None
+        self.policy_result.set(
+            "模式：峰值上限优化（等待运行）/ Mode: peak cap (not run)"
+            if self.optimization_mode.get() == "peak_cap" else
+            "模式：纯电费优化 / Mode: cost-only optimization")
         for pair in self.metric_labels.values():
             for label in pair:
                 label.configure(text="—")
@@ -379,6 +417,45 @@ class EnergyDesktop:
         self.history_combo.configure(values=())
         self._history_entries.clear()
 
+    def _policy_changed(self, *_):
+        if self._updating_policy or self._closing:
+            return
+        if self._cancel is not None:
+            self._cancel.set()
+        self._generation += 1
+        self._cancel = None
+        self._cancel_requested = False
+        self._active_kind = None
+        self._stop_progress()
+        self.selected_run.set("")
+        self.load_button.configure(state="disabled")
+        self._clear_results()
+        self.status.set("优化模式已改变；请重新运行 / Optimization mode changed; run again")
+        if self.imported is not None and self.imported.report.ready and \
+                len(self.imported.records) <= MAX_INTERACTIVE_PERIODS:
+            self.run_button.configure(state="normal")
+        self._sync_policy_controls()
+
+    def _sync_policy_controls(self):
+        busy = self._active_kind is not None or self._closing
+        radio_state = "disabled" if busy else "normal"
+        self.cost_mode_button.configure(state=radio_state)
+        self.peak_mode_button.configure(state=radio_state)
+        entry_state = "normal" if not busy and self.optimization_mode.get() == "peak_cap" \
+            else "disabled"
+        self.peak_cap_entry.configure(state=entry_state)
+
+    def _peak_cap_value(self):
+        text = self.peak_cap.get().strip()
+        try:
+            value = float(text)
+        except (TypeError, ValueError) as exc:
+            raise DashboardError("峰值上限必须是数字 / Peak cap must be numeric") from exc
+        if not text or not math.isfinite(value) or value < 0 or value > 1_000_000_000_000:
+            raise DashboardError(
+                "峰值上限必须是 0 至 1e12 之间的有限数值 / Peak cap must be finite and within 0..1e12")
+        return value
+
     def _job_running(self):
         return self._active_kind == "run" and self._cancel is not None
 
@@ -390,6 +467,7 @@ class EnergyDesktop:
         self._cancel = cancel
         self._cancel_requested = False
         self._active_kind = kind
+        self._sync_policy_controls()
         self.check_button.configure(state="disabled")
         self.refresh_button.configure(state="disabled")
         self.load_button.configure(state="disabled")
@@ -430,6 +508,7 @@ class EnergyDesktop:
             self._cancel = None
             self._cancel_requested = False
             self._active_kind = None
+            self._sync_policy_controls()
             self.check_button.configure(state="normal")
             self.refresh_button.configure(state="normal")
             self.save_root_button.configure(state="normal")
@@ -482,6 +561,7 @@ class EnergyDesktop:
         if self._closing or self._closed:
             return
         self._closing = True
+        self._sync_policy_controls()
         if self._cancel is not None:
             self._cancel.set()
         if self._pending_jobs:
@@ -538,7 +618,7 @@ class EnergyDesktop:
 
     def _show_history(self, entries):
         self._history_entries = {entry.name: entry for entry in entries}
-        labels = tuple(f"{entry.name} [{entry.status}]" for entry in entries)
+        labels = tuple(self._history_label(entry) for entry in entries)
         self.history_combo.configure(values=labels)
         self.selected_run.set("")
         self.load_button.configure(state="disabled")
@@ -552,7 +632,7 @@ class EnergyDesktop:
 
     def _select_history(self, _event=None):
         selected = self.selected_run.get()
-        name = selected.rsplit(" [", 1)[0] if " [" in selected else ""
+        name = selected.split(" [", 1)[0] if " [" in selected else ""
         available = (not self._closing and self._active_kind is None and
                      self.imported is not None and self.imported.report.ready and
                      name in self._history_entries)
@@ -562,7 +642,7 @@ class EnergyDesktop:
         if self._closing or self._active_kind is not None:
             return
         selected = self.selected_run.get()
-        name = selected.rsplit(" [", 1)[0] if " [" in selected else ""
+        name = selected.split(" [", 1)[0] if " [" in selected else ""
         if self.imported is None or not self.imported.report.ready or name not in self._history_entries:
             self.status.set("请先检查输入并选择运行 / Check input and select a run")
             return
@@ -615,13 +695,23 @@ class EnergyDesktop:
         if len(self.imported.records) > MAX_INTERACTIVE_PERIODS:
             self.status.set("超过交互式时段上限 / Interactive period limit exceeded")
             return
+        peak_cap_kw = None
+        if self.optimization_mode.get() == "peak_cap":
+            try:
+                peak_cap_kw = self._peak_cap_value()
+            except DashboardError as exc:
+                self._clear_results()
+                self.status.set("峰值上限无效；详见日志 / Invalid peak cap; see log")
+                self._append_log(f"DashboardError: {exc}")
+                return
         imported = self.imported
         self._clear_results()
         self.run_button.configure(state="disabled")
         self.status.set("正在计算与审计 / Solving and auditing…")
         runs_root = Path(self.runs_root.get())
         self._start_job("run", lambda cancel: run_comparison(
-            imported, cancel_event=cancel, runs_root=runs_root))
+            imported, cancel_event=cancel, runs_root=runs_root,
+            peak_cap_kw=peak_cap_kw))
 
     def _show_result(self, result):
         try:
@@ -636,23 +726,57 @@ class EnergyDesktop:
             raise DashboardError(f"图表数据无效 / Invalid chart data: {exc}") from exc
         self.chart = result.chart
         self.status.set(result.audit_message)
+        self._updating_policy = True
+        try:
+            self.optimization_mode.set(result.optimization_mode)
+            if result.peak_cap_kw is not None:
+                self.peak_cap.set(f"{result.peak_cap_kw:g}")
+        finally:
+            self._updating_policy = False
+        self._sync_policy_controls()
         if result.run_name:
             from .dashboard import RunHistoryEntry
             self._history_entries[result.run_name] = RunHistoryEntry(
-                result.run_name, "VALID", "verified")
+                result.run_name, "VALID", "verified",
+                result.optimization_mode, result.peak_cap_kw)
             self.history_combo.configure(values=tuple(
-                f"{name} [{entry.status}]" for name, entry in self._history_entries.items()))
-            self.selected_run.set(f"{result.run_name} [VALID]")
+                self._history_label(entry) for entry in self._history_entries.values()))
+            self.selected_run.set(self._history_label(self._history_entries[result.run_name]))
         for key, pair in self.metric_labels.items():
             optimized = self.chart["metrics"]["optimized"][key]
             baseline = self.chart["metrics"]["baseline"][key]
             pair[0].configure(text=f"{optimized:,.2f}")
             pair[1].configure(text=f"{baseline:,.2f}")
+        if result.optimization_mode == "peak_cap":
+            cap = result.peak_cap_kw
+            actual = float(self.chart["metrics"]["optimized"]["peak_grid_kw"])
+            if cap is None or not math.isfinite(cap) or actual > cap + 1e-5:
+                raise DashboardError("削峰结果未满足峰值上限 / Peak result exceeds the cap")
+            comparison = "无同输入有效对照 / no verified same-input reference"
+            if result.cost_mode_cost_cny is not None:
+                delta = float(self.chart["metrics"]["optimized"]["cost_cny"]) - \
+                    result.cost_mode_cost_cny
+                comparison = f"{delta:+,.2f} CNY"
+            self.policy_result.set(
+                f"峰值上限 / Cap: {cap:,.2f} kW  |  实际峰值 / Actual: {actual:,.2f} kW  |  "
+                f"满足 / PASS  |  相对纯电费 / vs cost-only: {comparison}")
+        else:
+            self.policy_result.set("模式：纯电费优化 / Mode: cost-only optimization")
         self._relayout_metric_cards()
         for canvas, spec in self.chart_canvases:
             self._draw(canvas, spec)
         self.run_button.configure(state="normal")
         self._select_history()
+
+    @staticmethod
+    def _history_label(entry):
+        if entry.optimization_mode == "peak_cap" and entry.peak_cap_kw is not None:
+            policy = f"峰值 {entry.peak_cap_kw:g} kW / Peak cap"
+        elif entry.optimization_mode == "cost":
+            policy = "纯电费 / Cost-only"
+        else:
+            policy = "模式未知 / Unknown mode"
+        return f"{entry.name} [{entry.status}] · {policy}"
 
     def _draw(self, canvas, specification):
         canvas.delete("all")

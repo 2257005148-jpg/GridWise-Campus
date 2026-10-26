@@ -35,6 +35,8 @@ COMPLETE
 
 `manifest.json` 格式版本为整数 `1`，包含 `metadata` 与按上述前五个文件固定排序的 `files`。每项文件记录 `name`、`size_bytes`、小写十六进制 `sha256`。元数据固定为 `model_version`、`git_commit`、`source_state`、`scenario_sha256`、`solver_name`、`status`，并与 `summary.json` 的同名运行字段比较。`scenario_sha256` 还与目录内 `scenario.json` 的原始字节比较。`COMPLETE` 的内容严格为 `sha256:<manifest.json bytes digest>\n`；它只是清单字节绑定标记，不能单独证明有效性。 / The manifest has a strict schema, fixed order and per-file size/digest. The marker binds exact manifest bytes and is not a standalone trust proof.
 
+v0.3.11 显式 `--peak-cap-kw K` 发布时使用格式版本 `2`：上述六个元数据字段外，增加 `optimization_mode="peak_cap"` 与数值 `peak_cap_kw=K`，并与 `summary.run` 逐项比较。独立审计在创建 `COMPLETE` 前核对逐时购电上限。未启用上限的运行继续使用原格式 `1`、原清单字段和原审计规则；读取器分别按格式严格校验。/ An opt-in peak-cap bundle uses manifest version 2 with exact policy metadata. Default bundles retain version 1 and its strict schema. Neither manifest version proves input authenticity or solver optimality by itself.
+
 限制 / Limits: 清单 64 KiB、标记 80 bytes、每个结果文件 32 MiB、五个文件合计 96 MiB；目录文件集合固定。拒绝清单中的绝对路径、路径穿越、重复名、额外字段、重复 JSON 键、非有限 JSON 值、链接或 junction 路径。 / Manifest and file reads are bounded; unexpected names, fields, duplicates, links and non-finite JSON fail closed.
 
 ## 发布顺序与安全读取 / Publication and verified reading
