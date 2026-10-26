@@ -1,6 +1,8 @@
 """Visible Windows Tk smoke test using only the bundled synthetic CSV."""
 
 import hashlib
+import subprocess
+import sys
 import tempfile
 import time
 import tkinter as tk
@@ -19,14 +21,38 @@ def wait(root, predicate, timeout=30):
     raise TimeoutError("GUI state timeout")
 
 
+def verify_restart(config, run_name):
+    root = tk.Tk()
+    app = EnergyDesktop(root, config_path=config)
+    try:
+        root.deiconify()
+        wait(root, lambda: app._active_kind is None)
+        assert app._history_entries[run_name].status == "VALID"
+        app._check()
+        wait(root, lambda: app.imported is not None)
+        app.selected_run.set(run_name + " [VALID]")
+        app._load_history()
+        wait(root, lambda: app._active_kind is None)
+        assert app.chart is not None
+        print("RESTART_HISTORY_OK")
+    finally:
+        app._on_close()
+        wait(root, lambda: app._closed)
+
+
 def main():
     before = hashlib.sha256(SAMPLE.read_bytes()).hexdigest()
     with tempfile.TemporaryDirectory(prefix="gridwise-v038-gui-") as temporary:
+        config = Path(temporary) / "settings" / "desktop.json"
+        runs_root = Path(temporary) / "runs"
+        runs_root.mkdir()
         root = tk.Tk()
-        app = EnergyDesktop(root, runs_root=Path(temporary) / "runs")
+        app = EnergyDesktop(root, runs_root=runs_root, config_path=config)
         try:
             root.deiconify()
             root.update()
+            app._save_runs_root()
+            assert config.exists()
             app._check()
             wait(root, lambda: app._active_kind is None)
             assert app.imported is not None and app.imported.report.ready
@@ -59,8 +85,20 @@ def main():
         finally:
             app._on_close()
             wait(root, lambda: app._closed)
+        restarted = subprocess.run(
+            [sys.executable, str(Path(__file__).resolve()), "--verify-restart",
+             str(config), run_name], capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=30, check=False)
+        assert restarted.returncode == 0, restarted.stderr + restarted.stdout
+        assert "RESTART_HISTORY_OK" in restarted.stdout
+        print("RESTART_HISTORY_OK")
     print("GUI_SMOKE_PASSED")
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) == 4 and sys.argv[1] == "--verify-restart":
+        verify_restart(Path(sys.argv[2]), sys.argv[3])
+    elif len(sys.argv) == 1:
+        main()
+    else:
+        raise SystemExit("usage: smoke_desktop_verified.py")

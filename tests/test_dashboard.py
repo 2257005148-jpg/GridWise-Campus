@@ -5,6 +5,7 @@ import subprocess
 import sys
 import threading
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -201,3 +202,35 @@ def test_cancelled_history_load_never_reads_files(tmp_path, monkeypatch):
     with pytest.raises(dashboard.DashboardError, match="cancelled"):
         dashboard.load_verified_comparison(imported, "run-" + "0" * 32,
                                            tmp_path, cancel_event=cancelled)
+
+
+def test_history_missing_root_is_empty_but_unreadable_root_fails(tmp_path, monkeypatch):
+    root = tmp_path / "runs"
+    assert dashboard.list_run_history(root) == []
+    root.mkdir()
+    original = Path.iterdir
+
+    def deny(path):
+        if path == root:
+            raise PermissionError("synthetic read denial")
+        return original(path)
+
+    monkeypatch.setattr(Path, "iterdir", deny)
+    with pytest.raises(dashboard.DashboardError, match="Cannot list runs root.*synthetic read denial"):
+        dashboard.list_run_history(root)
+
+
+def test_unwritable_runs_root_blocks_publication_and_chart(tmp_path, monkeypatch):
+    imported = import_energy_csv(SAMPLE, 1)
+    root = tmp_path / "unwritable"
+    original = Path.mkdir
+
+    def deny(path, *args, **kwargs):
+        if path == root:
+            raise PermissionError("synthetic write denial")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", deny)
+    with pytest.raises(dashboard.DashboardError, match="synthetic write denial"):
+        dashboard.run_comparison(imported, runs_root=root)
+    assert not root.exists()

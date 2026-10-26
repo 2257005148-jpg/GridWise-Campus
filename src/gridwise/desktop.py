@@ -18,6 +18,8 @@ except ImportError:  # Pure chart selection remains usable without a GUI runtime
 from .dashboard import (DashboardError, MAX_INTERACTIVE_PERIODS, ROOT, default_runs_root,
                         list_run_history, load_verified_comparison, run_comparison)
 from .data import import_energy_csv
+from .run_storage import (RunStorageError, default_config_path, load_saved_runs_root,
+                          save_runs_root)
 
 
 INK = "#16324A"
@@ -77,7 +79,8 @@ def chart_values(chart: dict, specification: tuple) -> tuple:
 
 
 class EnergyDesktop:
-    def __init__(self, root: tk.Tk, *, runs_root: Path | None = None):
+    def __init__(self, root: tk.Tk, *, runs_root: Path | None = None,
+                 config_path: Path | None = None):
         self.root = root
         root.title("GridWise Campus | 校园能源分析")
         root.geometry("1140x780")
@@ -85,7 +88,18 @@ class EnergyDesktop:
         root.configure(bg=PAPER)
         self.path = tk.StringVar(value=str(SAMPLE))
         self.step = tk.StringVar(value="1")
-        self.runs_root = tk.StringVar(value=str(runs_root or default_runs_root()))
+        self.config_path = config_path or default_config_path()
+        self._config_error = None
+        saved = None
+        if runs_root is None:
+            try:
+                saved = load_saved_runs_root(self.config_path)
+            except RunStorageError as exc:
+                self._config_error = str(exc)
+        self.runs_root = tk.StringVar(value=str(runs_root or saved or default_runs_root()))
+        self.storage_notice = tk.StringVar(value=(
+            "已保存的本地目录 / Saved local directory" if saved is not None else
+            "临时目录；选择并保存可持久保留 / Temporary; choose and save for persistence"))
         self.selected_run = tk.StringVar()
         self._history_entries = {}
         self.status = tk.StringVar(value="请选择 CSV 并检查质量 / Select a CSV and check quality")
@@ -104,14 +118,19 @@ class EnergyDesktop:
         self._card_columns = None
         self._style()
         self._layout()
+        if self._config_error:
+            self.status.set("运行目录设置不可用，已使用临时目录 / Saved runs root unavailable")
+            self._append_log(f"RunStorageError: {self._config_error}")
         self.path.trace_add("write", self._invalidate)
         self.step.trace_add("write", self._invalidate)
-        self.runs_root.trace_add("write", self._invalidate)
+        self.runs_root.trace_add("write", self._invalidate_root)
         self._poll_id = root.after(50, self._poll)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         root.bind("<Next>", self._scroll_keyboard)
         root.bind("<Prior>", self._scroll_keyboard)
         root.bind("<Escape>", self._cancel_job)
+        if saved is not None:
+            self._refresh_history()
 
     def _style(self):
         style = ttk.Style(self.root)
@@ -184,24 +203,30 @@ class EnergyDesktop:
         history = ttk.Frame(outer)
         history.pack(fill="x", pady=(8, 12))
         ttk.Label(history, text="本地运行根目录 / Local runs root").grid(
-            row=0, column=0, columnspan=4, sticky="w")
+            row=0, column=0, columnspan=5, sticky="w")
         ttk.Entry(history, textvariable=self.runs_root).grid(
-            row=1, column=0, columnspan=2, sticky="ew", pady=5)
+            row=1, column=0, columnspan=3, sticky="ew", pady=5)
         ttk.Button(history, text="选择目录 / Browse root", command=self._choose_runs_root).grid(
-            row=1, column=2, padx=(8, 0))
+            row=1, column=3, padx=(8, 0))
+        self.save_root_button = ttk.Button(history, text="保存目录 / Save root",
+                                           command=self._save_runs_root)
+        self.save_root_button.grid(row=1, column=4, padx=(8, 0))
+        ttk.Label(history, textvariable=self.storage_notice, style="Sub.TLabel").grid(
+            row=2, column=0, columnspan=3, sticky="w")
         self.refresh_button = ttk.Button(history, text="刷新运行 / Refresh runs",
                                          command=self._refresh_history)
-        self.refresh_button.grid(row=1, column=3, padx=(8, 0))
+        self.refresh_button.grid(row=2, column=4, padx=(8, 0))
         ttk.Label(history, text="运行历史 / Run history (VALID / INCOMPLETE / DAMAGED)").grid(
-            row=2, column=0, columnspan=4, sticky="w", pady=(6, 0))
+            row=3, column=0, columnspan=5, sticky="w", pady=(6, 0))
         self.history_combo = ttk.Combobox(history, textvariable=self.selected_run,
                                           state="readonly", values=())
-        self.history_combo.grid(row=3, column=0, columnspan=3, sticky="ew", pady=5)
+        self.history_combo.grid(row=4, column=0, columnspan=4, sticky="ew", pady=5)
         self.load_button = ttk.Button(history, text="读取所选 / Load selected",
                                       command=self._load_history, state="disabled")
-        self.load_button.grid(row=3, column=3, padx=(8, 0))
+        self.load_button.grid(row=4, column=4, padx=(8, 0))
         history.columnconfigure(0, weight=1)
         history.columnconfigure(1, weight=1)
+        history.columnconfigure(2, weight=1)
         self.history_combo.bind("<<ComboboxSelected>>", self._select_history)
 
         ttk.Label(outer, text="数据质量与运行日志 / Data quality and run log").pack(anchor="w")
@@ -343,12 +368,16 @@ class EnergyDesktop:
         self.load_button.configure(state="disabled")
         self.refresh_button.configure(state="normal")
         self.selected_run.set("")
-        self.history_combo.configure(values=())
-        self._history_entries.clear()
         self.cancel_button.configure(state="disabled")
         self.status.set("输入已改变，请重新检查 / Input changed; check again")
         self._clear_results()
         self._quality_text("数据与运行日志 / Data and run log\n等待检查 / Awaiting check")
+
+    def _invalidate_root(self, *_):
+        self._invalidate()
+        self.storage_notice.set("目录未保存 / Directory not saved")
+        self.history_combo.configure(values=())
+        self._history_entries.clear()
 
     def _job_running(self):
         return self._active_kind == "run" and self._cancel is not None
@@ -364,6 +393,7 @@ class EnergyDesktop:
         self.check_button.configure(state="disabled")
         self.refresh_button.configure(state="disabled")
         self.load_button.configure(state="disabled")
+        self.save_root_button.configure(state="disabled")
         self.cancel_button.configure(state="normal")
         self.cancel_button.focus_set()
         self.progress.pack(fill="x", pady=(2, 0))
@@ -402,6 +432,7 @@ class EnergyDesktop:
             self._active_kind = None
             self.check_button.configure(state="normal")
             self.refresh_button.configure(state="normal")
+            self.save_root_button.configure(state="normal")
             self.cancel_button.configure(state="disabled")
             if cancelled:
                 self._clear_results()
@@ -458,6 +489,7 @@ class EnergyDesktop:
             self.run_button.configure(state="disabled")
             self.refresh_button.configure(state="disabled")
             self.load_button.configure(state="disabled")
+            self.save_root_button.configure(state="disabled")
             self.cancel_button.configure(state="disabled")
             self.status.set("正在关闭并清理 / Closing and cleaning up…")
             return
@@ -484,6 +516,18 @@ class EnergyDesktop:
         selected = filedialog.askdirectory(title="选择运行根目录 / Select runs root")
         if selected:
             self.runs_root.set(selected)
+
+    def _save_runs_root(self):
+        if self._closing or self._active_kind is not None:
+            return
+        try:
+            save_runs_root(self.config_path, Path(self.runs_root.get()))
+        except RunStorageError as exc:
+            self.status.set("保存运行目录失败；详见日志 / Cannot save runs root")
+            self._append_log(f"RunStorageError: {exc}")
+            return
+        self.storage_notice.set("已保存的本地目录 / Saved local directory")
+        self.status.set("运行目录已保存 / Runs root saved")
 
     def _refresh_history(self):
         if self._closing or self._active_kind is not None:

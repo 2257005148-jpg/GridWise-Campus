@@ -45,3 +45,7 @@ v0.3.4：桌面入口沿用 v0.3.3 的有条件 Windows DPI 感知设置；取�
 ## v0.3.8 桌面集成 / Desktop integration
 
 桌面后台链路为 `data.import_energy_csv → dashboard.build_scenario → run_artifacts.publish_run（既有 CLI 求解、独立审计、清单与完成标记）→ read_verified_run → data.prepare_visualization_data → Tk 主线程`。图表层只接收安全读取接口返回的 `summary.json` 字节；读取历史目录时重新验清单与哈希，并用当前已检查 CSV 逐时核对输入。运行历史限量枚举并区分有效、未完成、损坏；不会自动删除目录。临时场景 JSON 仍由上下文管理器清理，已发布目录持久保存于用户指定的本地根目录。取消或关闭仍等待后台任务；进程取消后可能留下明确标记为未完成的目录供检查。 / The desktop now publishes and rereads verified bundles before chart preparation. Historical selection revalidates the bundle and matches it to the currently checked CSV. Temporary scenario files are cleaned up; completed and incomplete run directories are retained for inspection. The model and independent audit contract are unchanged.
+
+## v0.3.9 运行历史与读取复核 / History and read hardening
+
+新增标准库 `run_storage.py`，仅在用户显式保存时写入本地运行根目录偏好；启动时读取有界设置，恢复目录并异步刷新历史，失效时提示并使用原临时默认目录。`read_verified_run` 在完成五文件校验后再次检查运行目录身份、修改时间与精确条目集合，以拒绝验证期间可观察的目录变动。Tk 诊断脚本将 Tcl 初始化纳入异常捕获，并限制次数、每次超时及 JSON 输出大小。上述检查不能抵御可同时伪造清单的恶意本机写入者，也不提供断电持久性。/ An explicit local preference restores the selected root after restart. The reader now rechecks visible directory changes at the end of verification. The bounded Tk probe records initialization failures instead of losing its JSON result; adversarial-writer and power-loss guarantees remain out of scope.

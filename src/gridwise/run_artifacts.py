@@ -169,6 +169,7 @@ def _verify_contents(directory: Path, *, require_complete: bool) -> VerifiedRun:
         expected = set(RUN_FILES) | {"manifest.json", "COMPLETE"}
         seen = set()
         try:
+            directory_before = directory.stat()
             for child in directory.iterdir():
                 seen.add(child.name)
                 if len(seen) > len(expected) or child.name not in expected:
@@ -205,6 +206,17 @@ def _verify_contents(directory: Path, *, require_complete: bool) -> VerifiedRun:
     if require_complete and (marker != _read_file(directory / "COMPLETE", MAX_MARKER_BYTES) or
                              manifest_bytes != _read_file(directory / "manifest.json", MAX_MANIFEST_BYTES)):
         raise RunArtifactError(f"marker or manifest changed during verification: {directory}")
+    if require_complete:
+        _reject_link_path(directory)
+        try:
+            directory_after = directory.stat()
+            final_entries = {child.name for child in directory.iterdir()}
+        except OSError as exc:
+            raise RunArtifactError(f"cannot recheck run directory {directory}: {exc}") from exc
+        if (directory_before.st_dev, directory_before.st_ino, directory_before.st_mtime_ns) != \
+           (directory_after.st_dev, directory_after.st_ino, directory_after.st_mtime_ns) or \
+           final_entries != expected:
+            raise RunArtifactError(f"run directory changed during verification: {directory}")
     return VerifiedRun(directory, metadata, files)
 
 

@@ -58,3 +58,5 @@ v0.3.8 桌面端通过 `publish_run()` 创建运行目录，再用 `read_verifie
 - 若取消信号到达最终标记写入之后，完整运行可能已提交；取消只保证在检查到信号前不会继续下一步。 / Cancellation after the final marker may arrive after publication has completed.
 
 建议运行目录位于当前用户可控的本地磁盘，读者只调用 `read_verified_run()` 或 `verify`，并保存返回的字节用于后续解析。 / Use a trusted local parent directory and consume the returned verified bytes.
+
+v0.3.9 追加读取末尾的目录身份、修改时间和精确条目集合复核。确定性故障注入证实：旧读取器在读取过程中出现新目录项时可能仍返回成功；修复后拒绝该可观察变动。仍不能消除全部 TOCTOU 竞态，也不能将目录 `mtime` 或哈希解释为对恶意本机写入者的防护。长期保存及备份策略见[运行历史保存](run-history-storage.md)。/ A final directory identity, mtime and entry-set recheck now rejects a visible addition during reading. It does not eliminate all TOCTOU races or authenticate a writable local directory.

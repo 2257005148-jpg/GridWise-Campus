@@ -136,6 +136,14 @@ def test_reader_rejects_link_target_before_open(published, monkeypatch):
         artifacts.read_verified_run(published)
 
 
+def test_reader_rejects_junction_target_before_open(published, monkeypatch):
+    target = published / "baseline.csv"
+    original = Path.is_junction
+    monkeypatch.setattr(Path, "is_junction", lambda path: path == target or original(path))
+    with pytest.raises(artifacts.RunArtifactError, match="link or junction"):
+        artifacts.read_verified_run(published)
+
+
 def test_wrong_directory_and_incomplete_run_rejected(tmp_path, published):
     with pytest.raises(artifacts.RunArtifactError, match="published run directory"):
         artifacts.read_verified_run(published.parent)
@@ -287,6 +295,66 @@ def test_reader_detects_replacement_during_open(published, tmp_path, monkeypatch
 
     monkeypatch.setattr(artifacts.os, "read", replace_after_read)
     with pytest.raises(artifacts.RunArtifactError, match="changed while reading|cannot safely read"):
+        artifacts.read_verified_run(published)
+
+
+def test_reader_detects_new_directory_entry_during_verification(published, monkeypatch):
+    original = artifacts._read_file
+    changed = False
+
+    def add_entry(path, limit):
+        nonlocal changed
+        result = original(path, limit)
+        if Path(path).name == "summary.json" and not changed:
+            changed = True
+            (published / "unexpected.txt").write_text("synthetic", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(artifacts, "_read_file", add_entry)
+    with pytest.raises(artifacts.RunArtifactError, match="directory changed|unexpected run entry"):
+        artifacts.read_verified_run(published)
+
+
+def test_reader_detects_file_removed_after_open(published, monkeypatch):
+    target = published / "optimized.csv"
+    original = Path.lstat
+    seen = 0
+
+    def remove_before_final_stat(path):
+        nonlocal seen
+        if path == target:
+            seen += 1
+            if seen == 2:
+                target.unlink()
+        return original(path)
+
+    monkeypatch.setattr(Path, "lstat", remove_before_final_stat)
+    with pytest.raises(artifacts.RunArtifactError, match="cannot safely read"):
+        artifacts.read_verified_run(published)
+
+
+@pytest.mark.parametrize("name, injected", [
+    ("manifest.json", b'"format_version":1,"format_version":1'),
+    ("manifest.json", b'"format_version":NaN'),
+])
+def test_reader_rejects_duplicate_or_nonfinite_manifest_json(published, name, injected):
+    target = published / name
+    payload = target.read_bytes().replace(b'"format_version":1', injected, 1)
+    target.write_bytes(payload)
+    (published / "COMPLETE").write_bytes(
+        b"sha256:" + hashlib.sha256(payload).hexdigest().encode() + b"\n")
+    with pytest.raises(artifacts.RunArtifactError, match="duplicate JSON key|non-finite"):
+        artifacts.read_verified_run(published)
+
+
+@pytest.mark.parametrize("injected", [b'"run":{},"run":{}', b'"run":NaN'])
+def test_reader_rejects_duplicate_or_nonfinite_summary_json(published, injected):
+    target = published / "summary.json"
+    payload = target.read_bytes().replace(b'"run":', injected + b',"unused":', 1)
+    target.write_bytes(payload)
+    _rewrite_manifest(published, lambda manifest: manifest["files"][3].update(
+        size_bytes=len(payload), sha256=hashlib.sha256(payload).hexdigest()))
+    with pytest.raises(artifacts.RunArtifactError, match="duplicate JSON key|non-finite"):
         artifacts.read_verified_run(published)
 
 

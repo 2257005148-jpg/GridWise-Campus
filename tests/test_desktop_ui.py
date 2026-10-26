@@ -33,14 +33,14 @@ def pump(root, condition, seconds=3):
     pytest.fail("Tk did not reach the expected state")
 
 
-def new_desktop(*, runs_root=None):
+def new_desktop(*, runs_root=None, config_path=None):
     global _interpreter
     if _interpreter is None:
         _interpreter = tk.Tk()
         _interpreter.withdraw()
     root = tk.Toplevel(_interpreter)
     root.withdraw()
-    app = desktop.EnergyDesktop(root, runs_root=runs_root)
+    app = desktop.EnergyDesktop(root, runs_root=runs_root, config_path=config_path)
     app._check()
     pump(root, lambda: app.imported is not None)
     return root, app
@@ -398,6 +398,40 @@ def test_desktop_audit_failure_never_displays_success(tmp_path, monkeypatch):
         assert not (runs[0] / "COMPLETE").exists()
     finally:
         close_desktop(root, app)
+
+
+def test_saved_runs_root_restores_history_after_desktop_restart(tmp_path):
+    global _interpreter
+    runs_root = tmp_path / "persistent-runs"
+    runs_root.mkdir()
+    config = tmp_path / "settings" / "desktop.json"
+    first, app = new_desktop(runs_root=runs_root, config_path=config)
+    try:
+        app._save_runs_root()
+        assert config.exists()
+        app._run()
+        pump(first, lambda: app._active_kind is None, seconds=25)
+        assert app.chart is not None
+        name = app.selected_run.get().split(" [", 1)[0]
+    finally:
+        close_desktop(first, app)
+
+    second = tk.Toplevel(_interpreter)
+    second.withdraw()
+    reopened = desktop.EnergyDesktop(second, config_path=config)
+    try:
+        assert Path(reopened.runs_root.get()) == runs_root
+        pump(second, lambda: reopened._active_kind is None, seconds=10)
+        assert reopened._history_entries[name].status == "VALID"
+        reopened._check()
+        pump(second, lambda: reopened.imported is not None, seconds=10)
+        reopened.selected_run.set(f"{name} [VALID]")
+        reopened._load_history()
+        pump(second, lambda: reopened._active_kind is None, seconds=10)
+        assert reopened.chart is not None
+        assert reopened.chart["metrics"]["optimized"]["cost_cny"] == pytest.approx(131.01108)
+    finally:
+        close_desktop(second, reopened)
 
 
 def test_all_quality_issues_remain_keyboard_readable():
