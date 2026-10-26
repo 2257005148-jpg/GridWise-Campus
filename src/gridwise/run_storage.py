@@ -89,6 +89,8 @@ def save_runs_root(config_path: Path, runs_root: Path) -> Path:
     _reject_links(path)
     load_saved_runs_root(path)  # Do not overwrite an unknown or malformed file.
     temporary = None
+    save_error = None
+    cleanup_error = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         _reject_links(path)
@@ -104,12 +106,24 @@ def save_runs_root(config_path: Path, runs_root: Path) -> Path:
         _reject_links(path)
         os.replace(temporary, path)
         temporary = None
-        return root
-    except OSError as exc:
-        raise RunStorageError(f"cannot save settings {path}: {exc}") from exc
+    except Exception as exc:
+        save_error = exc
     finally:
         if temporary is not None:
             try:
                 Path(temporary).unlink()
-            except OSError:
-                pass  # Only this call's private temporary file could remain.
+            except OSError as exc:
+                cleanup_error = exc
+    if cleanup_error is not None:
+        detail = (f"private temporary file cleanup failed at {Path(temporary).absolute()}: "
+                  f"{cleanup_error!r}")
+        if save_error is not None:
+            raise RunStorageError(f"cannot save settings {path}: {save_error}; {detail}") from save_error
+        raise RunStorageError(detail) from cleanup_error
+    if save_error is not None:
+        if isinstance(save_error, RunStorageError):
+            raise save_error
+        if isinstance(save_error, OSError):
+            raise RunStorageError(f"cannot save settings {path}: {save_error}") from save_error
+        raise save_error
+    return root

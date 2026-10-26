@@ -88,3 +88,70 @@ def test_save_failure_preserves_existing_preference(tmp_path, monkeypatch):
         save_runs_root(config, second)
     assert config.read_bytes() == before
     assert list(config.parent.glob("desktop-*.tmp")) == []
+
+
+def test_replace_and_cleanup_failure_report_both_errors_and_residual_path(tmp_path, monkeypatch):
+    first, second = tmp_path / "one", tmp_path / "two"
+    first.mkdir()
+    second.mkdir()
+    config = tmp_path / "settings" / "desktop.json"
+    save_runs_root(config, first)
+    before = config.read_bytes()
+    original_unlink = Path.unlink
+
+    def deny_private_temp_unlink(path, *args, **kwargs):
+        if path.name.startswith("desktop-") and path.suffix == ".tmp":
+            raise PermissionError("synthetic cleanup denial")
+        return original_unlink(path, *args, **kwargs)
+
+    with monkeypatch.context() as changes:
+        changes.setattr("gridwise.run_storage.os.replace",
+                        lambda *_args: (_ for _ in ()).throw(
+                            PermissionError("synthetic replace denial")))
+        changes.setattr(Path, "unlink", deny_private_temp_unlink)
+        with pytest.raises(RunStorageError) as failure:
+            save_runs_root(config, second)
+
+    leftovers = list(config.parent.glob("desktop-*.tmp"))
+    assert len(leftovers) == 1
+    assert config.read_bytes() == before
+    assert isinstance(failure.value.__cause__, PermissionError)
+    assert "synthetic replace denial" in str(failure.value.__cause__)
+    assert "synthetic cleanup denial" in str(failure.value)
+    assert str(leftovers[0].resolve()) in str(failure.value)
+    leftovers[0].unlink()  # Only this test's private temporary file.
+
+
+def test_runtime_replace_and_cleanup_failure_preserve_cause_and_residual(tmp_path, monkeypatch):
+    first, second = tmp_path / "one", tmp_path / "two"
+    first.mkdir()
+    second.mkdir()
+    config = tmp_path / "settings" / "desktop.json"
+    save_runs_root(config, first)
+    before = config.read_bytes()
+    original_unlink = Path.unlink
+
+    def deny_private_temp_unlink(path, *args, **kwargs):
+        if path.name.startswith("desktop-") and path.suffix == ".tmp":
+            raise PermissionError("synthetic cleanup denial")
+        return original_unlink(path, *args, **kwargs)
+
+    try:
+        with monkeypatch.context() as changes:
+            changes.setattr("gridwise.run_storage.os.replace",
+                            lambda *_args: (_ for _ in ()).throw(
+                                RuntimeError("synthetic replace runtime failure")))
+            changes.setattr(Path, "unlink", deny_private_temp_unlink)
+            with pytest.raises(RunStorageError) as failure:
+                save_runs_root(config, second)
+
+        leftovers = list(config.parent.glob("desktop-*.tmp"))
+        assert len(leftovers) == 1
+        assert config.read_bytes() == before
+        assert isinstance(failure.value.__cause__, RuntimeError)
+        assert "synthetic replace runtime failure" in str(failure.value)
+        assert "synthetic cleanup denial" in str(failure.value)
+        assert str(leftovers[0].absolute()) in str(failure.value)
+    finally:
+        for private_temp in config.parent.glob("desktop-*.tmp"):
+            original_unlink(private_temp)  # Only this test's private temporary file.

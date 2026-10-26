@@ -6,7 +6,7 @@
 
 Windows 设置路径为 `%LOCALAPPDATA%\GridWiseCampus\desktop.json`；其他系统遵循 `$XDG_CONFIG_HOME/GridWiseCampus/desktop.json` 或 `~/.config/GridWiseCampus/desktop.json`。文件只记录格式版本与绝对运行目录路径，不记录输入数据。启动时若设置有效，应用加载该目录并异步刷新历史；若设置损坏、不可读或目录消失，则显示错误并退回临时默认目录，不自动改写设置。测试通过注入临时设置路径，未写入真实用户设置。/ The settings file stores only a version and absolute path. A valid saved root is loaded and scanned after restart. Invalid settings cause a visible fallback to the temporary default without rewriting the file.
 
-运行根目录必须已经存在，且不能是符号链接或 junction。程序保存设置时先验证既有文件格式，写入同目录临时文件后替换，并清理本次临时文件。此操作只是**单文件**更新，不能保证断电持久性或抵御恶意本机写入者。/ The target directory must already exist and must not be a link or junction. The preference uses a one-file replacement; it is not a power-loss or adversarial-writer guarantee.
+运行根目录必须已经存在，且不能是符号链接或 junction。程序保存设置时先验证既有文件格式，写入同目录临时文件后替换，并尝试清理本次临时文件。若替换与清理都失败，错误同时报告原始替换异常、清理异常及残留临时文件完整路径；不会悄悄声称清理成功。请先核对该路径归属，再由用户决定如何处理残留。此操作只是**单文件**更新，不能保证断电持久性或抵御恶意本机写入者。/ The target directory must already exist and must not be a link or junction. Saving validates the existing preference, writes a private temporary file and replaces one file. If replacement and cleanup both fail, the error reports the original replacement failure, cleanup failure and full residual path. Inspect ownership before deciding how to handle the residual. This is not a power-loss or adversarial-writer guarantee.
 
 ## 保留、备份与清理 / Retention, backup and cleanup
 
