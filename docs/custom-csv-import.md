@@ -40,6 +40,6 @@ timestamp,load_kw,pv_kw,price_cny_per_kwh
 
 ## 设备参数与来源边界 / Equipment and provenance boundary
 
-CSV 只替换时间戳、负荷、可用光伏和电价。`grid_max_kw`、电池容量、初末 SOC、充放电功率及效率仍来自 `examples/synthetic-day.json`；这不是完整的用户设备建模。/ The CSV changes only the time series. Grid and battery/SOC assumptions remain those of the synthetic equipment template.
+CSV 只替换时间戳、负荷、可用光伏和电价。`grid_max_kw`、电池容量、初末 SOC、充放电功率及效率的默认值来自 `examples/synthetic-day.json`；v0.3.14 起可在桌面“设备参数”区域显式覆盖，详见[自定义设备参数](custom-device-parameters.md)。/ The CSV changes only the time series. Equipment defaults come from the synthetic template and can now be overridden in the validated device panel.
 
 已校验运行目录保存生成后的规范化 `scenario.json`，不保存原始 CSV 字节。清单哈希可检测运行文件内容变化，但不能证明输入真实、可信或获得授权。项目仍无真实校园数据连接或控制能力。/ A verified bundle stores the normalized scenario, not the original CSV bytes. Hashes detect content changes; they do not prove authenticity, trustworthiness or authorization.

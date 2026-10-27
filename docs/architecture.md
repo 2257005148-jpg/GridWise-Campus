@@ -59,3 +59,9 @@ Tk 主线程持有模式单选项、上限输入和结果策略栏；后台调�
 `data.import_energy_csv` 将通过校验的时间戳规范化为 `datetime.isoformat()`，因此 `Z`、`+0000` 与 `+00:00` 等同一合法偏移表示进入相同的后续场景表示；绝对时间、顺序和间隔不变，原文件保持只读。`data.summarize_energy_input` 仅消费完整有效的 `ImportResult`，用 `Decimal` 计算功率/价格范围和 `Σ功率×step_hours` 电量；失败导入没有摘要。Tk 只格式化并显示该结果，不重复业务计算。/ Valid timestamp spellings are canonicalized in memory. The data layer, rather than Tk, calculates input ranges and load/PV energy from complete validated records.
 
 自定义 CSV 只提供时间戳、负荷、可用光伏和电价。`dashboard.build_scenario` 继续从 `examples/synthetic-day.json` 取得电网和电池/SOC 参数，模型、审计器及运行产物格式不变。桌面质量检查最多接受数据层的 50,000 时段，但交互求解仍限 96 时段；超限数据可查看质量和摘要，不进入求解。运行目录保存规范化 `scenario.json` 而不是原始 CSV 字节，其哈希证明文件一致性，不证明输入真实性。/ Custom CSV data replaces only the time series. Equipment assumptions remain synthetic, desktop solving remains limited to 96 periods, and verified bundles preserve the normalized scenario rather than the source CSV bytes.
+
+## v0.3.14 自定义设备参数 / Custom device parameters
+
+新增标准库模块 `device.py`，将电网功率、容量、初末 kWh、充放电功率和效率作为冻结结构集中校验。默认结构从合成模板解析；GUI 文本经同一公共解析器转成结构后传给 `dashboard.build_scenario`，从而真正进入既有 `core.parse_scenario` 和 Pyomo 约束。模型、CLI、审计器及产物格式均未改。/ A small standard-library module validates the existing equipment constants. The GUI passes that object through scenario construction into the unchanged model constraints.
+
+完整链路为 `CSV ImportResult + DeviceParameters → build_scenario → publish_run → audit_exports.py → read_verified_run → DeviceParameters.from_scenario + 图表`。设备变化只使结果和所选历史失效，不丢弃已经通过的 CSV 质量报告。选择历史运行时，从安全读取返回的 `scenario.json` 恢复该运行实际参数；同输入成本参考仍要求完整场景 SHA-256 相同，因此不同设备参数不会被错误比较。/ Equipment edits invalidate stale outputs while preserving CSV quality. Historical values are restored from verified scenario bytes, and cost-reference matching remains bound to the full scenario digest.

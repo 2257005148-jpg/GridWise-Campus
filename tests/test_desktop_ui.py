@@ -83,6 +83,58 @@ def test_quality_panel_shows_validated_input_summary_and_equipment_scope():
         close_desktop(root, app)
 
 
+def test_device_defaults_change_invalidation_and_controller_handoff(monkeypatch):
+    root, app = new_desktop()
+    captured = []
+
+    def capture(_imported, **kwargs):
+        captured.append(kwargs["device_parameters"])
+        raise DashboardError("synthetic stop after device capture")
+
+    monkeypatch.setattr(desktop, "run_comparison", capture)
+    try:
+        assert app.device_values["grid_max_kw"].get() == "120"
+        assert app.device_values["capacity_kwh"].get() == "80"
+        assert "默认" in app.device_source.get() or "Default" in app.device_source.get()
+        imported = app.imported
+        app.chart = {"stale": True}
+
+        app.device_values["capacity_kwh"].set("60")
+        root.update()
+
+        assert app.imported is imported
+        assert app.chart is None
+        assert app.run_button.instate(["!disabled"])
+        assert "自定义" in app.device_source.get() or "Custom" in app.device_source.get()
+
+        app._run()
+        pump(root, lambda: app._active_kind is None)
+        assert len(captured) == 1
+        assert captured[0].capacity_kwh == 60
+        assert captured[0].grid_max_kw == 120
+        assert app.chart is None
+    finally:
+        close_desktop(root, app)
+
+
+def test_invalid_device_parameter_blocks_controller_and_success(monkeypatch):
+    root, app = new_desktop()
+    calls = []
+    monkeypatch.setattr(desktop, "run_comparison", lambda *_args, **_kwargs: calls.append(True))
+    try:
+        app.device_values["charge_efficiency"].set("0")
+        app._run()
+        root.update()
+
+        assert calls == []
+        assert app.chart is None
+        assert app._active_kind is None
+        assert "设备参数无效" in app.status.get() or "Invalid device" in app.status.get()
+        assert "charge_efficiency" in app.quality.get("1.0", "end")
+    finally:
+        close_desktop(root, app)
+
+
 def test_run_keeps_tk_responsive_and_rejects_duplicate_clicks(monkeypatch):
     root, app = new_desktop()
     release = threading.Event()
@@ -570,6 +622,11 @@ def test_saved_peak_cap_history_restores_mode_after_restart(tmp_path):
     first, app = new_desktop(runs_root=runs_root, config_path=config)
     try:
         app._save_runs_root()
+        app.device_values["capacity_kwh"].set("60")
+        app.device_values["initial_kwh"].set("30")
+        app.device_values["terminal_kwh"].set("30")
+        app.device_values["max_charge_kw"].set("20")
+        app.device_values["max_discharge_kw"].set("20")
         app.optimization_mode.set("peak_cap")
         app.peak_cap.set("55")
         app._run()
@@ -594,6 +651,12 @@ def test_saved_peak_cap_history_restores_mode_after_restart(tmp_path):
         assert reopened.chart["metrics"]["optimized"]["peak_grid_kw"] == pytest.approx(55)
         assert reopened.optimization_mode.get() == "peak_cap"
         assert reopened.peak_cap.get() == "55"
+        assert reopened.device_values["capacity_kwh"].get() == "60"
+        assert reopened.device_values["initial_kwh"].get() == "30"
+        assert reopened.device_values["terminal_kwh"].get() == "30"
+        assert reopened.device_values["max_charge_kw"].get() == "20"
+        assert reopened.device_values["max_discharge_kw"].get() == "20"
+        assert "自定义" in reopened.device_source.get() or "Custom" in reopened.device_source.get()
         assert "55.00 kW" in reopened.policy_result.get()
     finally:
         close_desktop(second, reopened)

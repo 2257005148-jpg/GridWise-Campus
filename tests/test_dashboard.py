@@ -13,6 +13,7 @@ import pytest
 from gridwise import dashboard, run_artifacts
 from gridwise.data import import_energy_csv
 from gridwise.desktop import CHARTS, chart_values
+from gridwise.device import DeviceParameters
 
 
 ROOT = dashboard.ROOT
@@ -25,6 +26,66 @@ def write_energy_csv(path, rows):
     return path
 
 
+def test_build_scenario_uses_validated_custom_device_parameters():
+    imported = import_energy_csv(SAMPLE, 1)
+    devices = DeviceParameters(75, 40, 10, 12, 8, 9, 0.9, 0.85)
+
+    scenario = dashboard.build_scenario(imported, device_parameters=devices)
+
+    assert scenario["grid_max_kw"] == 75
+    assert scenario["battery"] == {
+        "capacity_kwh": 40,
+        "initial_kwh": 10,
+        "terminal_kwh": 12,
+        "max_charge_kw": 8,
+        "max_discharge_kw": 9,
+        "charge_efficiency": 0.9,
+        "discharge_efficiency": 0.85,
+    }
+    assert scenario["timeseries"][0]["load_kw"] == 60
+
+
+def test_default_device_serialization_preserves_template_number_representation():
+    imported = import_energy_csv(SAMPLE, 1)
+    template = json.loads(dashboard.SYNTHETIC_TEMPLATE.read_text(encoding="utf-8"))
+
+    scenario = dashboard.build_scenario(imported)
+
+    assert scenario["grid_max_kw"] == template["grid_max_kw"]
+    assert scenario["battery"] == template["battery"]
+    assert type(scenario["grid_max_kw"]) is type(template["grid_max_kw"])
+    for field, value in template["battery"].items():
+        assert type(scenario["battery"][field]) is type(value)
+
+
+def test_custom_devices_flow_through_both_modes_verified_artifacts_and_history(tmp_path):
+    imported = import_energy_csv(SAMPLE, 1)
+    devices = DeviceParameters(100, 60, 30, 30, 20, 20, 0.9, 0.9)
+    runs_root = tmp_path / "runs"
+
+    cost = dashboard.run_comparison(
+        imported, runs_root=runs_root, device_parameters=devices)
+    capped = dashboard.run_comparison(
+        imported, runs_root=runs_root, peak_cap_kw=55,
+        device_parameters=devices)
+
+    assert cost.device_parameters == devices
+    assert capped.device_parameters == devices
+    assert capped.chart["metrics"]["optimized"]["peak_grid_kw"] <= 55 + 1e-5
+    assert capped.cost_mode_cost_cny == pytest.approx(
+        cost.chart["metrics"]["optimized"]["cost_cny"])
+    verified = run_artifacts.read_verified_run(runs_root / capped.run_name)
+    scenario = json.loads(verified.files["scenario.json"])
+    assert DeviceParameters.from_scenario(scenario) == devices
+    assert scenario["battery"]["terminal_kwh"] == 30
+    summary = json.loads(verified.files["summary.json"])
+    assert summary["optimized"]["rows"][-1]["soc_kwh"] == pytest.approx(30)
+
+    restored = dashboard.load_verified_comparison(imported, capped.run_name, runs_root)
+    assert restored.device_parameters == devices
+    assert restored.optimization_mode == "peak_cap"
+
+
 def test_valid_synthetic_csv_runs_audited_comparison(tmp_path, monkeypatch):
     imported = import_energy_csv(SAMPLE, 1)
     monkeypatch.setattr(dashboard.tempfile, "tempdir", str(tmp_path))
@@ -32,6 +93,7 @@ def test_valid_synthetic_csv_runs_audited_comparison(tmp_path, monkeypatch):
     chart = result.chart
     assert result.audit_message.startswith("AUDIT PASSED")
     assert result.run_name is not None
+    assert result.device_parameters == dashboard.default_device_parameters()
     verified = run_artifacts.read_verified_run(tmp_path / "gridwise-campus-runs" / result.run_name)
     assert verified.files["scenario.json"]
     assert len(chart["timestamps"]) == 6
@@ -80,15 +142,44 @@ def test_custom_half_hour_csv_runs_cost_and_peak_cap_modes(tmp_path):
     ])
     imported = import_energy_csv(path, 0.5)
     runs_root = tmp_path / "runs"
+    devices = DeviceParameters(90, 50, 25, 25, 15, 15, 0.92, 0.9)
 
-    cost = dashboard.run_comparison(imported, runs_root=runs_root)
-    peak = dashboard.run_comparison(imported, runs_root=runs_root, peak_cap_kw=55)
+    cost = dashboard.run_comparison(
+        imported, runs_root=runs_root, device_parameters=devices)
+    peak = dashboard.run_comparison(
+        imported, runs_root=runs_root, peak_cap_kw=55,
+        device_parameters=devices)
 
     assert cost.optimization_mode == "cost"
     assert peak.optimization_mode == "peak_cap"
     assert peak.peak_cap_kw == 55
     assert peak.chart["metrics"]["optimized"]["peak_grid_kw"] <= 55 + 1e-5
     assert peak.cost_mode_cost_cny == pytest.approx(cost.chart["metrics"]["optimized"]["cost_cny"])
+    verified = run_artifacts.read_verified_run(runs_root / peak.run_name)
+    assert DeviceParameters.from_scenario(json.loads(verified.files["scenario.json"])) == devices
+    summary = json.loads(verified.files["summary.json"])
+    assert all(row["charge_kw"] <= devices.max_charge_kw + 1e-5
+               for row in summary["optimized"]["rows"])
+    assert all(row["discharge_kw"] <= devices.max_discharge_kw + 1e-5
+               for row in summary["optimized"]["rows"])
+    assert all(row["soc_kwh"] <= devices.capacity_kwh + 1e-5
+               for row in summary["optimized"]["rows"])
+    assert summary["optimized"]["rows"][-1]["soc_kwh"] == pytest.approx(
+        devices.terminal_kwh)
+
+
+def test_valid_but_infeasible_custom_devices_fail_without_completed_run(tmp_path):
+    imported = import_energy_csv(SAMPLE, 1)
+    devices = DeviceParameters(0, 80, 0, 0, 0, 0, 0.95, 0.95)
+    runs_root = tmp_path / "runs"
+
+    with pytest.raises(dashboard.DashboardError, match="no optimal solution"):
+        dashboard.run_comparison(
+            imported, runs_root=runs_root, device_parameters=devices)
+
+    directories = list(runs_root.glob("run-*"))
+    assert len(directories) == 1
+    assert not (directories[0] / "COMPLETE").exists()
 
 
 def test_peak_cap_comparison_publishes_verified_policy_and_metrics(tmp_path):

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .data import DataError, ImportResult, prepare_visualization_data
+from .device import DeviceParameterError, DeviceParameters
 from .run_artifacts import RUN_NAME, RunArtifactError, VerifiedRun, publish_run, read_verified_run
 
 
@@ -30,6 +31,7 @@ class DashboardResult:
     optimization_mode: str = "cost"
     peak_cap_kw: float | None = None
     cost_mode_cost_cny: float | None = None
+    device_parameters: DeviceParameters | None = None
 
 
 @dataclass(frozen=True)
@@ -55,6 +57,11 @@ def _policy_from_verified(verified: VerifiedRun) -> tuple[str, float | None]:
     mode = verified.metadata.get("optimization_mode", "cost")
     cap = verified.metadata.get("peak_cap_kw")
     return mode, float(cap) if cap is not None else None
+
+
+def _devices_from_verified(verified: VerifiedRun) -> DeviceParameters:
+    scenario = json.loads(verified.files["scenario.json"])
+    return DeviceParameters.from_scenario(scenario)
 
 
 def _model_source_digest(version: str) -> str | None:
@@ -147,24 +154,36 @@ def load_verified_comparison(imported: ImportResult, run_name: str,
         mode, cap = _policy_from_verified(verified)
         cost_mode_cost = _matching_cost_mode_cost(imported, verified, Path(runs_root))
         return DashboardResult(chart, "运行文件校验通过 / Verified run files", run_name,
-                               mode, cap, cost_mode_cost)
-    except (RunArtifactError, DataError, OSError, ValueError) as exc:
+                               mode, cap, cost_mode_cost,
+                               _devices_from_verified(verified))
+    except (RunArtifactError, DataError, DeviceParameterError, OSError, ValueError) as exc:
         raise DashboardError(f"历史运行不可用 / Historical run unavailable: {exc}") from exc
 
 
-def build_scenario(imported: ImportResult, template_path: Path = SYNTHETIC_TEMPLATE) -> dict:
-    """Use validated series and the documented synthetic equipment assumptions."""
+def default_device_parameters(template_path: Path = SYNTHETIC_TEMPLATE) -> DeviceParameters:
+    """Load the documented default equipment values from the synthetic template."""
+    try:
+        template = json.loads(Path(template_path).read_text(encoding="utf-8"))
+        return DeviceParameters.from_scenario(template)
+    except (OSError, ValueError, KeyError, TypeError, DeviceParameterError) as exc:
+        raise DashboardError(f"synthetic equipment template unavailable: {exc}") from exc
+
+
+def build_scenario(imported: ImportResult, template_path: Path = SYNTHETIC_TEMPLATE,
+                   *, device_parameters: DeviceParameters | None = None) -> dict:
+    """Combine a validated series with validated grid and battery parameters."""
     if not imported.report.ready or not imported.records:
         raise DashboardError("CSV quality check failed; no dispatch was run")
     if len(imported.records) > MAX_INTERACTIVE_PERIODS:
         raise DashboardError(f"interactive run supports at most {MAX_INTERACTIVE_PERIODS} periods")
     try:
-        template = json.loads(Path(template_path).read_text(encoding="utf-8"))
+        devices = device_parameters or default_device_parameters(template_path)
+        equipment = devices.to_scenario_fields()
         return {
             "power_unit": "kW", "energy_unit": "kWh", "price_unit": "CNY/kWh",
             "step_hours": float(imported.report.step_hours),
-            "grid_max_kw": template["grid_max_kw"],
-            "battery": template["battery"],
+            "grid_max_kw": equipment["grid_max_kw"],
+            "battery": equipment["battery"],
             "timeseries": [
                 {"timestamp": row.timestamp, "load_kw": float(row.load_kw),
                  "pv_kw": float(row.pv_kw),
@@ -172,8 +191,8 @@ def build_scenario(imported: ImportResult, template_path: Path = SYNTHETIC_TEMPL
                 for row in imported.records
             ],
         }
-    except (OSError, ValueError, KeyError, TypeError) as exc:
-        raise DashboardError(f"synthetic equipment template unavailable: {exc}") from exc
+    except (ValueError, KeyError, TypeError, DeviceParameterError) as exc:
+        raise DashboardError(f"invalid device parameters: {exc}") from exc
 
 
 def _validated_peak_cap(value, grid_max_kw: float) -> float | None:
@@ -194,9 +213,11 @@ def run_comparison(imported: ImportResult, template_path: Path = SYNTHETIC_TEMPL
                    solve_timeout_seconds: float = 120,
                    audit_timeout_seconds: float = 120,
                    runs_root: Path | None = None,
-                   peak_cap_kw: float | None = None) -> DashboardResult:
+                   peak_cap_kw: float | None = None,
+                   device_parameters: DeviceParameters | None = None) -> DashboardResult:
     """Publish, independently audit, safely reread, then prepare charts."""
-    scenario = build_scenario(imported, template_path)
+    scenario = build_scenario(imported, template_path,
+                              device_parameters=device_parameters)
     peak_cap_kw = _validated_peak_cap(peak_cap_kw, float(scenario["grid_max_kw"]))
     cancel_event = cancel_event or threading.Event()
     if solve_timeout_seconds <= 0 or audit_timeout_seconds <= 0:
@@ -223,6 +244,7 @@ def run_comparison(imported: ImportResult, template_path: Path = SYNTHETIC_TEMPL
                                    directory.name,
                                    run.get("optimization_mode", "cost"),
                                    run.get("peak_cap_kw"),
-                                   cost_mode_cost)
-    except (DataError, RunArtifactError, OSError, ValueError) as exc:
+                                   cost_mode_cost,
+                                   _devices_from_verified(verified))
+    except (DataError, DeviceParameterError, RunArtifactError, OSError, ValueError) as exc:
         raise DashboardError(f"comparison unavailable: {exc}") from exc

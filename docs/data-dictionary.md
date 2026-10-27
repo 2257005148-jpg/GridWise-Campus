@@ -36,6 +36,10 @@ v0.3.13：合法时间戳通过检查后，内部 `EnergyRecord.timestamp` 使�
 
 桌面自定义 CSV 仅替换 `timeseries` 中的时间、负荷、光伏和电价。`grid_max_kw` 与全部 `battery` 字段继续来自 `examples/synthetic-day.json`；桌面交互求解最多 96 时段。运行产物保存生成后的规范化 `scenario.json`，不保存原始 CSV 字节。/ Desktop CSV import changes only the time series; grid and battery assumptions remain synthetic, and verified run bundles contain the normalized scenario rather than the source CSV bytes.
 
+v0.3.14：上述 `grid_max_kw` 与七个 `battery` 字段的**默认值**仍来自 `examples/synthetic-day.json`，但桌面可在运行前用经 `device.DeviceParameters` 校验的数值覆盖。界面初末 SOC 对应 `initial_kwh`/`terminal_kwh`，单位 kWh；不是百分比。全部数值有限且 ≤10¹²；容量和效率必须为正，效率不超过 1，初末能量不超过容量，其余功率允许为 0。/ The synthetic template remains the default source, while the desktop can supply a validated override. SOC fields are kWh energy. Numeric, capacity, efficiency and energy-within-capacity bounds match the existing scenario contract.
+
+实际运行参数保存在已校验运行目录的 `scenario.json`，其字节包含在清单大小/SHA-256 校验中，`summary.run.scenario_sha256` 与之匹配。未增加新的清单格式：哈希检测内容变化，但不证明参数真实、可信或适用于物理设备。/ Exact equipment values are already covered by the verified scenario and scenario digest, so no artifact-format migration is required. Hashes are integrity evidence, not authenticity evidence.
+
 v0.1.3 `summary.run.scenario_sha256` 为 `sha256:` 前缀加原始 UTF-8 输入字节的 64 位小写十六进制摘要；不规范化 BOM、换行、键顺序、数值文本或时间戳。`model_version=cost-mip-v1` 表示未改变的纯电费优化模型；`solver_name=appsi_highs`，`status=optimal`。完整来源边界见 `docs/input-provenance.md`。 / The digest covers exact source bytes; metadata identifies the unchanged cost model and configured solver, without asserting input authenticity.
 
 v0.1.4 完整 `model_version` 改为 `cost-mip-v1+sha256.<规范化 core.py 摘要>`；`cost-mip-v1` 保留为家族名。`run.git_commit` 为 40 位 HEAD 或 `unavailable`；`run.source_state` 为 `clean`、`dirty` 或 `unavailable`。Git 状态检查范围与未提交源码行为见 `docs/input-provenance.md`。 / The full version now binds to normalized model source; Git fields explicitly describe the checkout state.

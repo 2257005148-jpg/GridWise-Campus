@@ -11,6 +11,7 @@
 - 只读 CSV 导入、缺失值与时间完整性报告、图表数据准备 / Read-only CSV quality reporting and chart-data preparation.
 - 本机双语交互原型：文件选择、质量拦截、优化/基线对比与五张图 / Local bilingual desktop prototype with file selection, quality gating, comparison and five charts.
 - 桌面端显式选择纯电费或峰值上限模式，记录并复核运行策略 / Desktop selection of cost-only or peak-cap policy with traceable verified metadata.
+- 桌面端可校验并实际使用自定义电网与电池参数 / Validated custom grid and battery parameters used by the desktop solver.
 
 ## 安装与运行 / Install and run
 
@@ -44,6 +45,8 @@ v0.3.9 可在界面选择**已存在**的受控本地目录，再点击“保存
 v0.3.12 桌面默认仍为“纯电费优化”。选择“峰值上限优化”后输入有限、非负且不超过场景 `grid_max_kw` 的 kW 数值；只有独立审计、格式 2 清单及安全读取通过才显示结果。策略栏显示设置上限、实际峰值和达标状态。只有运行历史中存在同场景指纹、同求解器、同模型源码摘要且重新校验通过的纯电费结果时，才显示相对电费差额；否则明确显示无可靠对照。/ The desktop now exposes the opt-in cap without changing the default. Cost delta is shown only against a verified, same-input and same-model cost-only run.
 
 v0.3.13 将 [`examples/synthetic-day.csv`](examples/synthetic-day.csv) 作为可复制的自定义输入模板。合法的 `Z`、`+0000` 和 `+00:00` 时间戳在内存中规范化为带冒号的偏移形式，原 CSV 字节不修改；质量通过后显示时间范围、功率范围、价格范围及按 `Σ功率×step_hours` 计算的负荷/光伏可用电量。CSV 只替换时间序列、负荷、光伏和电价，电网及电池/SOC 参数仍来自合成设备场景；桌面最多运行 96 时段。详见[自定义 CSV 导入](docs/custom-csv-import.md)。/ The existing sample CSV is the copyable template. Valid offset spellings are normalized in memory, while the source bytes remain untouched. Input summaries do not change the fixed synthetic equipment assumptions or the 96-period desktop limit.
+
+v0.3.14 在桌面增加独立的[设备参数配置](docs/custom-device-parameters.md)：默认值仍取自合成模板，用户可修改电网购电上限、电池容量、充放电功率、以 kWh 表示的初末 SOC 及两种效率。参数改变会立即清除旧结果；实际值写入同次运行的 `scenario.json`，并由现有独立审计、清单哈希和安全读取复核。历史运行被选择后恢复其已校验设备参数。/ The desktop can now override validated grid and battery assumptions. Changes invalidate stale results, while the exact values are carried in the verified scenario and restored with a selected historical run.
 
 v0.3.2 为小窗口和高 DPI 字体增加页面纵向滚动、按可用宽度排列的指标卡、短页签与保留时区的两行时间标签。v0.3.3 在创建 Tk 窗口前检查 Windows 进程的 DPI 感知状态；仅在仍为 unaware 时启用每显示器感知，不覆盖已有设置。只读日志可通过 Tab 到达，在操作控件上按 Page Up/Down 可滚动页面。忙碌条只表示任务正在运行。真实跨显示器 DPI 行为仍需有不同 DPI 显示器的环境验收。 / The desktop scrolls vertically, reflows metric cards, shortens chart tabs, and retains time zones on the axis. v0.3.3 enables per-monitor DPI awareness before Tk window creation only when the process is still unaware. The read-only log is reachable by Tab, and Page Up/Down scrolls the page from action controls. Native cross-monitor behavior remains unverified.
 

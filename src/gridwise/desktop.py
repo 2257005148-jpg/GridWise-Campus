@@ -16,9 +16,12 @@ except ImportError:  # Pure chart selection remains usable without a GUI runtime
     filedialog = None
     ttk = None
 
-from .dashboard import (DashboardError, MAX_INTERACTIVE_PERIODS, ROOT, default_runs_root,
+from .dashboard import (DashboardError, MAX_INTERACTIVE_PERIODS, ROOT,
+                        default_device_parameters, default_runs_root,
                         list_run_history, load_verified_comparison, run_comparison)
 from .data import import_energy_csv, summarize_energy_input
+from .device import (DEVICE_FIELDS, DeviceParameterError, DeviceParameters,
+                     parse_device_parameters)
 from .run_storage import (RunStorageError, default_config_path, load_saved_runs_root,
                           save_runs_root)
 
@@ -94,6 +97,14 @@ class EnergyDesktop:
         self.policy_result = tk.StringVar(
             value="模式：纯电费优化 / Mode: cost-only optimization")
         self._updating_policy = False
+        self._updating_devices = False
+        self.default_devices = default_device_parameters()
+        self.device_values = {
+            field: tk.StringVar(value=f"{getattr(self.default_devices, field):g}")
+            for field in DEVICE_FIELDS
+        }
+        self.device_source = tk.StringVar(
+            value="默认合成设备参数 / Default synthetic equipment parameters")
         self.config_path = config_path or default_config_path()
         self._config_error = None
         saved = None
@@ -133,6 +144,8 @@ class EnergyDesktop:
         self.runs_root.trace_add("write", self._invalidate_root)
         self.optimization_mode.trace_add("write", self._policy_changed)
         self.peak_cap.trace_add("write", self._policy_changed)
+        for value in self.device_values.values():
+            value.trace_add("write", self._device_changed)
         self._poll_id = root.after(50, self._poll)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         root.bind("<Next>", self._scroll_keyboard)
@@ -194,15 +207,46 @@ class EnergyDesktop:
 
         self.import_scope_label = ttk.Label(
             outer,
-            text=("CSV 仅替换负荷、光伏、电价和时间序列；电网、电池及 SOC 参数仍来自合成设备场景；"
+            text=("CSV 仅替换负荷、光伏、电价和时间序列；电网、电池及 SOC 默认值来自合成设备场景，"
+                  "可在下方修改；"
                   f"桌面最多 {MAX_INTERACTIVE_PERIODS} 时段。 / CSV replaces load, PV, price and "
-                  "timestamps only; grid, battery and SOC parameters remain from the synthetic "
+                  "timestamps only; grid, battery and SOC defaults come from the synthetic "
                   f"equipment scenario; desktop limit: {MAX_INTERACTIVE_PERIODS} periods."),
             style="Sub.TLabel", wraplength=980)
         self.import_scope_label.pack(anchor="w", fill="x", pady=(6, 0))
         self.import_scope_label.bind(
             "<Configure>", lambda event: self.import_scope_label.configure(
                 wraplength=max(120, event.width - 12)))
+
+        devices = ttk.LabelFrame(outer, text="设备参数 / Device parameters", padding=(12, 8))
+        devices.pack(fill="x", pady=(12, 0))
+        labels = {
+            "grid_max_kw": "电网最大购电 / Grid max (kW)",
+            "capacity_kwh": "电池容量 / Capacity (kWh)",
+            "max_charge_kw": "最大充电 / Max charge (kW)",
+            "max_discharge_kw": "最大放电 / Max discharge (kW)",
+            "initial_kwh": "初始 SOC / Initial SOC (kWh)",
+            "terminal_kwh": "终端 SOC / Terminal SOC (kWh)",
+            "charge_efficiency": "充电效率 / Charge efficiency",
+            "discharge_efficiency": "放电效率 / Discharge efficiency",
+        }
+        display_order = ("grid_max_kw", "capacity_kwh", "max_charge_kw",
+                         "max_discharge_kw", "initial_kwh", "terminal_kwh",
+                         "charge_efficiency", "discharge_efficiency")
+        self.device_entries = {}
+        for index, field in enumerate(display_order):
+            cell = ttk.Frame(devices)
+            cell.grid(row=index // 4, column=index % 4, sticky="ew",
+                      padx=(0 if index % 4 == 0 else 12, 0), pady=(0, 7))
+            ttk.Label(cell, text=labels[field]).pack(anchor="w")
+            entry = ttk.Entry(cell, textvariable=self.device_values[field], width=16)
+            entry.pack(fill="x", pady=(3, 0))
+            self.device_entries[field] = entry
+        for column in range(4):
+            devices.columnconfigure(column, weight=1)
+        self.device_source_label = ttk.Label(
+            devices, textvariable=self.device_source, style="Sub.TLabel")
+        self.device_source_label.grid(row=2, column=0, columnspan=4, sticky="w")
 
         policy = ttk.LabelFrame(outer, text="优化模式 / Optimization mode", padding=(12, 8))
         policy.pack(fill="x", pady=(12, 0))
@@ -450,6 +494,37 @@ class EnergyDesktop:
             self.run_button.configure(state="normal")
         self._sync_policy_controls()
 
+    def _device_changed(self, *_):
+        if self._updating_devices or self._closing:
+            return
+        if self._cancel is not None:
+            self._cancel.set()
+        self._generation += 1
+        self._cancel = None
+        self._cancel_requested = False
+        self._active_kind = None
+        self._stop_progress()
+        self.selected_run.set("")
+        self.load_button.configure(state="disabled")
+        self._clear_results()
+        self._update_device_source()
+        self.status.set("设备参数已改变；旧结果已失效 / Device parameters changed; prior results invalidated")
+        if self.imported is not None and self.imported.report.ready and \
+                len(self.imported.records) <= MAX_INTERACTIVE_PERIODS:
+            self.run_button.configure(state="normal")
+        self._sync_policy_controls()
+
+    def _update_device_source(self):
+        try:
+            current = self._device_parameters_value()
+        except DashboardError:
+            self.device_source.set("设备参数无效 / Invalid device parameters")
+        else:
+            self.device_source.set(
+                "默认合成设备参数 / Default synthetic equipment parameters"
+                if current == self.default_devices else
+                "用户自定义设备参数 / Custom device parameters")
+
     def _sync_policy_controls(self):
         busy = self._active_kind is not None or self._closing
         radio_state = "disabled" if busy else "normal"
@@ -458,6 +533,25 @@ class EnergyDesktop:
         entry_state = "normal" if not busy and self.optimization_mode.get() == "peak_cap" \
             else "disabled"
         self.peak_cap_entry.configure(state=entry_state)
+        device_state = "disabled" if busy else "normal"
+        for entry in self.device_entries.values():
+            entry.configure(state=device_state)
+
+    def _device_parameters_value(self) -> DeviceParameters:
+        try:
+            return parse_device_parameters(
+                {field: value.get() for field, value in self.device_values.items()})
+        except DeviceParameterError as exc:
+            raise DashboardError(f"设备参数无效 / Invalid device parameters: {exc}") from exc
+
+    def _set_device_parameters(self, parameters: DeviceParameters) -> None:
+        self._updating_devices = True
+        try:
+            for field in DEVICE_FIELDS:
+                self.device_values[field].set(f"{getattr(parameters, field):g}")
+        finally:
+            self._updating_devices = False
+        self._update_device_source()
 
     def _peak_cap_value(self):
         text = self.peak_cap.get().strip()
@@ -732,6 +826,13 @@ class EnergyDesktop:
                 self.status.set("峰值上限无效；详见日志 / Invalid peak cap; see log")
                 self._append_log(f"DashboardError: {exc}")
                 return
+        try:
+            device_parameters = self._device_parameters_value()
+        except DashboardError as exc:
+            self._clear_results()
+            self.status.set("设备参数无效；详见日志 / Invalid device parameters; see log")
+            self._append_log(f"DashboardError: {exc}")
+            return
         imported = self.imported
         self._clear_results()
         self.run_button.configure(state="disabled")
@@ -739,7 +840,7 @@ class EnergyDesktop:
         runs_root = Path(self.runs_root.get())
         self._start_job("run", lambda cancel: run_comparison(
             imported, cancel_event=cancel, runs_root=runs_root,
-            peak_cap_kw=peak_cap_kw))
+            peak_cap_kw=peak_cap_kw, device_parameters=device_parameters))
 
     def _show_result(self, result):
         try:
@@ -754,6 +855,8 @@ class EnergyDesktop:
             raise DashboardError(f"图表数据无效 / Invalid chart data: {exc}") from exc
         self.chart = result.chart
         self.status.set(result.audit_message)
+        if result.device_parameters is not None:
+            self._set_device_parameters(result.device_parameters)
         self._updating_policy = True
         try:
             self.optimization_mode.set(result.optimization_mode)

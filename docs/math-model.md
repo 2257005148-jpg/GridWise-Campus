@@ -4,6 +4,8 @@
 
 输入 / Inputs: 负荷 `L[t]`、可用光伏 `A[t]`、电价 `p[t]`、购电上界 `Gmax`、电池容量 `Emax`、充放电功率上界 `Cmax/Dmax`、效率 `ηc/ηd`、初末能量 `E0/Eend`。
 
+v0.3.14 桌面允许用户显式配置 `Gmax`、`Emax`、`Cmax`、`Dmax`、`E0`、`Eend`、`ηc` 和 `ηd`，但没有改变下列方程。界面中的“初始/终端 SOC”按现有模型表示为 **kWh 能量**，不是百分比；`0 ≤ E0,Eend ≤ Emax`，`Emax>0`，`Cmax,Dmax,Gmax≥0`，`0<ηc,ηd≤1`。零功率等合法参数仍可能使模型不可行，此时必须失败关闭。/ The desktop now exposes the existing equipment constants without changing the equations. Initial and terminal SOC are energy in kWh, not percentages; valid values may still form an infeasible scenario, which fails closed.
+
 变量 / Variables: 购电 `G[t]`、充电 `C[t]`、放电 `D[t]`、光伏利用 `P[t]`、期末能量 `E[t]`、充电模式二元变量 `z[t]`。弃光 `A[t]-P[t]`。 / Grid, charge, discharge, PV used, end-of-step energy, binary charge mode; curtailment is available minus used PV.
 
 目标 / Objective: `min Σ G[t] × p[t] × Δt`，仅计购电电费，不含需量费、退化、售电或排放。 / Minimize import cost only.
