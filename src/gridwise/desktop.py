@@ -18,7 +18,7 @@ except ImportError:  # Pure chart selection remains usable without a GUI runtime
 
 from .dashboard import (DashboardError, MAX_INTERACTIVE_PERIODS, ROOT, default_runs_root,
                         list_run_history, load_verified_comparison, run_comparison)
-from .data import import_energy_csv
+from .data import import_energy_csv, summarize_energy_input
 from .run_storage import (RunStorageError, default_config_path, load_saved_runs_root,
                           save_runs_root)
 
@@ -110,6 +110,7 @@ class EnergyDesktop:
         self._history_entries = {}
         self.status = tk.StringVar(value="请选择 CSV 并检查质量 / Select a CSV and check quality")
         self.imported = None
+        self.input_summary = None
         self.chart = None
         self.chart_canvases = []
         self._events = queue.Queue()
@@ -190,6 +191,18 @@ class EnergyDesktop:
         ttk.Entry(controls, textvariable=self.step, width=12).grid(
             row=1, column=2, padx=(16, 0), sticky="w")
         controls.columnconfigure(0, weight=1)
+
+        self.import_scope_label = ttk.Label(
+            outer,
+            text=("CSV 仅替换负荷、光伏、电价和时间序列；电网、电池及 SOC 参数仍来自合成设备场景；"
+                  f"桌面最多 {MAX_INTERACTIVE_PERIODS} 时段。 / CSV replaces load, PV, price and "
+                  "timestamps only; grid, battery and SOC parameters remain from the synthetic "
+                  f"equipment scenario; desktop limit: {MAX_INTERACTIVE_PERIODS} periods."),
+            style="Sub.TLabel", wraplength=980)
+        self.import_scope_label.pack(anchor="w", fill="x", pady=(6, 0))
+        self.import_scope_label.bind(
+            "<Configure>", lambda event: self.import_scope_label.configure(
+                wraplength=max(120, event.width - 12)))
 
         policy = ttk.LabelFrame(outer, text="优化模式 / Optimization mode", padding=(12, 8))
         policy.pack(fill="x", pady=(12, 0))
@@ -401,6 +414,7 @@ class EnergyDesktop:
         self._cancel_requested = False
         self._active_kind = None
         self.imported = None
+        self.input_summary = None
         self.check_button.configure(state="normal")
         self.run_button.configure(state="disabled")
         self.load_button.configure(state="disabled")
@@ -667,11 +681,24 @@ class EnergyDesktop:
         counts = ", ".join(f"{key}: {value}" for key, value in report.missing_counts.items())
         lines = [f"ready={report.ready}  |  rows={report.row_count}  |  step={report.step_hours} h",
                  f"缺失值 / Missing: {counts}"]
+        summary = summarize_energy_input(result) if report.ready else None
+        if summary is not None:
+            lines.extend([
+                "数据摘要 / Input summary",
+                f"时间 / Time: {summary['start_timestamp']} → {summary['end_timestamp']}",
+                f"负荷 / Load: {summary['load_kw']['min']:,.2f}–{summary['load_kw']['max']:,.2f} kW; "
+                f"{summary['load_energy_kwh']:,.2f} kWh",
+                f"光伏可用 / PV available: {summary['pv_kw']['min']:,.2f}–"
+                f"{summary['pv_kw']['max']:,.2f} kW; {summary['pv_available_energy_kwh']:,.2f} kWh",
+                f"电价 / Price: {summary['price_cny_per_kwh']['min']:,.4g}–"
+                f"{summary['price_cny_per_kwh']['max']:,.4g} CNY/kWh",
+            ])
         lines.extend(f"{report.source}:{item.line} [{item.field}] {item.code}: {item.detail}"
                      for item in report.issues)
         self._quality_text("\n".join(lines))
         if report.ready:
             self.imported = result
+            self.input_summary = summary
             if len(result.records) > MAX_INTERACTIVE_PERIODS:
                 self.status.set(f"质量通过；交互调度最多 {MAX_INTERACTIVE_PERIODS} 时段 / "
                                 f"Quality passed; interactive limit {MAX_INTERACTIVE_PERIODS}")
@@ -681,6 +708,7 @@ class EnergyDesktop:
             self._select_history()
         else:
             self.imported = None
+            self.input_summary = None
             self.run_button.configure(state="disabled")
             self.status.set("质量检查未通过；调度已禁止 / Invalid input; dispatch blocked")
 

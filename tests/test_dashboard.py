@@ -1,5 +1,6 @@
 """Offline dashboard controller and chart selection tests."""
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -17,6 +18,11 @@ from gridwise.desktop import CHARTS, chart_values
 ROOT = dashboard.ROOT
 SAMPLE = ROOT / "examples" / "synthetic-day.csv"
 HEADER = "timestamp,load_kw,pv_kw,price_cny_per_kwh\n"
+
+
+def write_energy_csv(path, rows):
+    path.write_text(HEADER + "".join(rows), encoding="utf-8", newline="")
+    return path
 
 
 def test_valid_synthetic_csv_runs_audited_comparison(tmp_path, monkeypatch):
@@ -41,6 +47,48 @@ def test_valid_synthetic_csv_runs_audited_comparison(tmp_path, monkeypatch):
         assert unit in {"kW", "kWh", "CNY"}
         assert all(len(values) == len(stamps) for _, _, values in series)
     assert list(tmp_path.glob("gridwise-ui-*")) == []
+
+
+@pytest.mark.parametrize("suffix", ["Z", "+0000", "+00:00"])
+def test_custom_timestamp_spellings_complete_verified_dashboard_flow(tmp_path, suffix):
+    path = write_energy_csv(tmp_path / "custom.csv", [
+        f"2026-03-01T00:00:00{suffix},20,0,0.4\n",
+        f"2026-03-01T00:30:00{suffix},25,5,0.8\n",
+    ])
+    before = hashlib.sha256(path.read_bytes()).hexdigest()
+    imported = import_energy_csv(path, 0.5)
+
+    result = dashboard.run_comparison(imported, runs_root=tmp_path / "runs")
+
+    assert result.audit_message.startswith("AUDIT PASSED")
+    assert result.chart["timestamps"] == [
+        "2026-03-01T00:00:00+00:00",
+        "2026-03-01T00:30:00+00:00",
+    ]
+    verified = run_artifacts.read_verified_run(tmp_path / "runs" / result.run_name)
+    scenario = json.loads(verified.files["scenario.json"])
+    assert [row["timestamp"] for row in scenario["timeseries"]] == result.chart["timestamps"]
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == before
+
+
+def test_custom_half_hour_csv_runs_cost_and_peak_cap_modes(tmp_path):
+    path = write_energy_csv(tmp_path / "custom-modes.csv", [
+        "2026-03-01T08:00:00+08:00,45,0,0.3\n",
+        "2026-03-01T08:30:00+08:00,50,10,0.4\n",
+        "2026-03-01T09:00:00+08:00,60,20,1.0\n",
+        "2026-03-01T09:30:00+08:00,55,5,0.8\n",
+    ])
+    imported = import_energy_csv(path, 0.5)
+    runs_root = tmp_path / "runs"
+
+    cost = dashboard.run_comparison(imported, runs_root=runs_root)
+    peak = dashboard.run_comparison(imported, runs_root=runs_root, peak_cap_kw=55)
+
+    assert cost.optimization_mode == "cost"
+    assert peak.optimization_mode == "peak_cap"
+    assert peak.peak_cap_kw == 55
+    assert peak.chart["metrics"]["optimized"]["peak_grid_kw"] <= 55 + 1e-5
+    assert peak.cost_mode_cost_cny == pytest.approx(cost.chart["metrics"]["optimized"]["cost_cny"])
 
 
 def test_peak_cap_comparison_publishes_verified_policy_and_metrics(tmp_path):

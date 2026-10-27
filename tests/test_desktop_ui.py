@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -59,6 +60,27 @@ def test_close_removes_scheduled_tk_poll_callback():
     assert poll_id in root.tk.call("after", "info")
     close_desktop(root, app)
     assert poll_id not in root.tk.call("after", "info")
+
+
+def test_quality_panel_shows_validated_input_summary_and_equipment_scope():
+    root, app = new_desktop()
+    try:
+        message = app.quality.get("1.0", "end")
+        scope = app.import_scope_label.cget("text")
+        assert app.input_summary["start_timestamp"] == "2026-01-01T08:00:00+08:00"
+        assert app.input_summary["end_timestamp"] == "2026-01-01T13:00:00+08:00"
+        assert app.input_summary["load_kw"] == {"min": 55.0, "max": 90.0}
+        assert app.input_summary["pv_kw"] == {"min": 0.0, "max": 70.0}
+        assert app.input_summary["load_energy_kwh"] == pytest.approx(415)
+        assert app.input_summary["pv_available_energy_kwh"] == pytest.approx(175)
+        assert "数据摘要 / Input summary" in message
+        assert "415.00 kWh" in message
+        assert "175.00 kWh" in message
+        assert "负荷、光伏、电价和时间序列" in scope
+        assert "synthetic equipment scenario" in scope
+        assert "96" in scope
+    finally:
+        close_desktop(root, app)
 
 
 def test_run_keeps_tk_responsive_and_rejects_duplicate_clicks(monkeypatch):
@@ -193,6 +215,7 @@ def test_input_change_discards_in_flight_success(monkeypatch, tmp_path):
             root.update()
             time.sleep(0.01)
         assert app.chart is None
+        assert app.input_summary is None
         assert all(label.cget("text") == "—" for pair in app.metric_labels.values()
                    for label in pair)
         assert "AUDIT PASSED" not in app.status.get()
@@ -251,7 +274,33 @@ def test_invalid_csv_disables_run_and_clears_results(tmp_path, payload):
         pump(root, lambda: "未通过" in app.status.get() or "Invalid" in app.status.get())
         assert app.run_button.instate(["disabled"])
         assert app.chart is None
+        assert app.input_summary is None
+        assert "数据摘要 / Input summary" not in app.quality.get("1.0", "end")
         assert path.read_bytes() == payload
+    finally:
+        close_desktop(root, app)
+
+
+def test_quality_summary_remains_visible_but_run_is_blocked_above_desktop_limit(tmp_path):
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    path = tmp_path / "too-many-periods.csv"
+    path.write_text(
+        "timestamp,load_kw,pv_kw,price_cny_per_kwh\n" + "".join(
+            f"{(start + timedelta(hours=index)).isoformat()},10,0,0.5\n"
+            for index in range(desktop.MAX_INTERACTIVE_PERIODS + 1)),
+        encoding="utf-8",
+        newline="",
+    )
+    root, app = new_desktop()
+    try:
+        app.path.set(str(path))
+        app._check()
+        pump(root, lambda: app._active_kind is None)
+        assert app.imported is not None and app.imported.report.ready
+        assert app.input_summary["row_count"] == desktop.MAX_INTERACTIVE_PERIODS + 1
+        assert "数据摘要 / Input summary" in app.quality.get("1.0", "end")
+        assert app.run_button.instate(["disabled"])
+        assert "最多 96" in app.status.get() or "limit 96" in app.status.get()
     finally:
         close_desktop(root, app)
 

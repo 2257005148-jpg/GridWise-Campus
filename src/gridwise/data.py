@@ -184,7 +184,7 @@ def import_energy_csv(path: Path, step_hours) -> ImportResult:
                                                    f"expected {step} h, got {elapsed} h"))
                 previous = stamp
             if stamp is not None and len(numbers) == len(NUMERIC_FIELDS):
-                records.append(EnergyRecord(row["timestamp"], *(numbers[name] for name in NUMERIC_FIELDS)))
+                records.append(EnergyRecord(stamp.isoformat(), *(numbers[name] for name in NUMERIC_FIELDS)))
     except csv.Error as exc:
         issues.append(QualityIssue("csv_error", reader.line_num, "file", str(exc)))
     if row_count == 0:
@@ -196,6 +196,28 @@ def _export_number(row, name, where):
     if not isinstance(row, dict) or name not in row:
         raise DataError(f"{where}.{name}: missing")
     return _decimal(row[name], f"{where}.{name}")
+
+
+def summarize_energy_input(imported: ImportResult) -> dict:
+    """Summarize a complete validated series without modifying its records."""
+    if not imported.report.ready or not imported.records:
+        raise DataError("input CSV is not ready for summary")
+    step = _step(imported.report.step_hours)
+    loads = tuple(record.load_kw for record in imported.records)
+    pv_values = tuple(record.pv_kw for record in imported.records)
+    prices = tuple(record.price_cny_per_kwh for record in imported.records)
+    return {
+        "start_timestamp": imported.records[0].timestamp,
+        "end_timestamp": imported.records[-1].timestamp,
+        "row_count": len(imported.records),
+        "step_hours": float(step),
+        "load_kw": {"min": float(min(loads)), "max": float(max(loads))},
+        "pv_kw": {"min": float(min(pv_values)), "max": float(max(pv_values))},
+        "price_cny_per_kwh": {"min": float(min(prices)), "max": float(max(prices))},
+        "load_energy_kwh": float(sum(loads, Decimal(0)) * step),
+        "pv_available_energy_kwh": float(sum(pv_values, Decimal(0)) * step),
+        "units": {"power": "kW", "energy": "kWh", "price": "CNY/kWh", "step": "h"},
+    }
 
 
 def prepare_visualization_data(imported: ImportResult, summary: dict) -> dict:

@@ -32,6 +32,10 @@ v0.1.2 离线验证资源边界 / Offline audit bounds: 单文件 ≤ 32 MiB，C
 
 验收补充 / Acceptance detail: `grid_energy_kwh = Σ(grid_kw × step_hours)`；`peak_grid_kw = max(grid_kw)`，峰值按单时段购电功率定义。不同 UTC 偏移的时间戳按绝对瞬间判断重复与间隔；不填补缺口。导入器保留原始 CSV 字节，质量不合格时 `records` 为空。 / Peak uses period grid power, timestamps are compared as instants, and failed imports expose no partial series.
 
+v0.3.13：合法时间戳通过检查后，内部 `EnergyRecord.timestamp` 使用 `datetime.isoformat()` 规范化；例如 UTC 的 `Z` 与 `+0000` 统一为 `+00:00`。规范化不改变绝对时间、顺序或间隔，也不写回原始 CSV。`summarize_energy_input` 只接受 `ready=true` 的非空导入，返回起止时间、行数、步长、负荷/PV/价格最小最大值，以及 `load_energy_kwh=Σ(load_kw×step_hours)` 和 `pv_available_energy_kwh=Σ(pv_kw×step_hours)`。该摘要描述输入，不是求解结果或真实性证明。/ Valid timestamps are canonicalized in memory without rewriting the CSV. The input summary uses validated records and equal steps to calculate load and available-PV energy; it is not an optimization result or authenticity claim.
+
+桌面自定义 CSV 仅替换 `timeseries` 中的时间、负荷、光伏和电价。`grid_max_kw` 与全部 `battery` 字段继续来自 `examples/synthetic-day.json`；桌面交互求解最多 96 时段。运行产物保存生成后的规范化 `scenario.json`，不保存原始 CSV 字节。/ Desktop CSV import changes only the time series; grid and battery assumptions remain synthetic, and verified run bundles contain the normalized scenario rather than the source CSV bytes.
+
 v0.1.3 `summary.run.scenario_sha256` 为 `sha256:` 前缀加原始 UTF-8 输入字节的 64 位小写十六进制摘要；不规范化 BOM、换行、键顺序、数值文本或时间戳。`model_version=cost-mip-v1` 表示未改变的纯电费优化模型；`solver_name=appsi_highs`，`status=optimal`。完整来源边界见 `docs/input-provenance.md`。 / The digest covers exact source bytes; metadata identifies the unchanged cost model and configured solver, without asserting input authenticity.
 
 v0.1.4 完整 `model_version` 改为 `cost-mip-v1+sha256.<规范化 core.py 摘要>`；`cost-mip-v1` 保留为家族名。`run.git_commit` 为 40 位 HEAD 或 `unavailable`；`run.source_state` 为 `clean`、`dirty` 或 `unavailable`。Git 状态检查范围与未提交源码行为见 `docs/input-provenance.md`。 / The full version now binds to normalized model source; Git fields explicitly describe the checkout state.

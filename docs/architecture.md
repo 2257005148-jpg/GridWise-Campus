@@ -22,7 +22,7 @@ v0.1.9 当前模型源码不可读时，`current_context=UNKNOWN` 并保留定�
 
 ## v0.2.0 离线数据层 / Offline data layer
 
-新增独立路径 `合成或明确提供的 CSV → data.import_energy_csv → 质量报告 + 完整有效时序 → prepare_visualization_data(既有导出汇总) → 图表数据契约`。`data.py` 只使用标准库，既不调用 Pyomo，也不读取设备或网络。质量不通过时不给下游部分时序；图表准备要求优化与基线的时间、输入回显和三个汇总指标一致。现有 JSON→纯电费求解路径未改，CSV 导入尚不自动生成优化场景，交互式 UI 尚未实现。 / The CSV quality and chart-data path is separate from the unchanged optimizer; no live integration or UI exists.
+v0.2.0 当时新增独立路径 `合成或明确提供的 CSV → data.import_energy_csv → 质量报告 + 完整有效时序 → prepare_visualization_data(既有导出汇总) → 图表数据契约`。`data.py` 只使用标准库，既不调用 Pyomo，也不读取设备或网络。质量不通过时不给下游部分时序；图表准备要求优化与基线的时间、输入回显和三个汇总指标一致。当时 CSV 尚未自动生成优化场景，后续桌面集成见下文。 / v0.2.0 introduced the bounded CSV quality and chart-data path before the later desktop integration described below.
 
 数据层设计和开源参考比较见[方案](data-layer-visualization-plan.md)。OpenEMS、Emoncms 和 PyPSA 只作为设计参考，未安装或复制其代码。 / External projects are design references only.
 
@@ -53,3 +53,9 @@ v0.3.4：桌面入口沿用 v0.3.3 的有条件 Windows DPI 感知设置；取�
 ## v0.3.12 桌面削峰接入 / Desktop peak-cap integration
 
 Tk 主线程持有模式单选项、上限输入和结果策略栏；后台调用仍为 `dashboard.run_comparison → run_artifacts.publish_run → 独立 audit_exports.py → read_verified_run → prepare_visualization_data`。纯电费模式传入 `None`，峰值模式传入显式 kW 数值。运行中模式控件禁用；取消、关闭、代次隔离和错误队列沿用原生命周期。历史条目从已校验清单读取模式与上限，选择后再次安全读取并恢复显示。相对纯电费的成本只在同场景、同求解器、同模型源码摘要的已校验运行存在时计算；该差值不改变三项指标或模型目标。/ Policy selection remains a Tk presentation concern; solving, independent audit, verified publication and chart preparation stay in their existing layers. A compatible verified cost-only run is required for the optional cost delta.
+
+## v0.3.13 自定义 CSV 体验 / Custom CSV experience
+
+`data.import_energy_csv` 将通过校验的时间戳规范化为 `datetime.isoformat()`，因此 `Z`、`+0000` 与 `+00:00` 等同一合法偏移表示进入相同的后续场景表示；绝对时间、顺序和间隔不变，原文件保持只读。`data.summarize_energy_input` 仅消费完整有效的 `ImportResult`，用 `Decimal` 计算功率/价格范围和 `Σ功率×step_hours` 电量；失败导入没有摘要。Tk 只格式化并显示该结果，不重复业务计算。/ Valid timestamp spellings are canonicalized in memory. The data layer, rather than Tk, calculates input ranges and load/PV energy from complete validated records.
+
+自定义 CSV 只提供时间戳、负荷、可用光伏和电价。`dashboard.build_scenario` 继续从 `examples/synthetic-day.json` 取得电网和电池/SOC 参数，模型、审计器及运行产物格式不变。桌面质量检查最多接受数据层的 50,000 时段，但交互求解仍限 96 时段；超限数据可查看质量和摘要，不进入求解。运行目录保存规范化 `scenario.json` 而不是原始 CSV 字节，其哈希证明文件一致性，不证明输入真实性。/ Custom CSV data replaces only the time series. Equipment assumptions remain synthetic, desktop solving remains limited to 96 periods, and verified bundles preserve the normalized scenario rather than the source CSV bytes.

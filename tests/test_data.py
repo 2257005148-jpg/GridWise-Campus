@@ -1,9 +1,11 @@
 """Synthetic CSV quality and chart-preparation behavior."""
 
 import json
+import hashlib
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -11,7 +13,7 @@ import pytest
 from gridwise.cli import run
 from gridwise.data import (
     MAX_FILE_BYTES, MAX_LINE_BYTES, MAX_PERIODS, DataError,
-    import_energy_csv, prepare_visualization_data,
+    import_energy_csv, prepare_visualization_data, summarize_energy_input,
 )
 
 
@@ -50,6 +52,59 @@ def test_valid_step_intervals(tmp_path, minutes):
     rows = [f"{first.isoformat()},1,0,0.5\n", f"{second.isoformat()},2,1,0.9\n"]
     result = import_energy_csv(write_csv(tmp_path / "valid.csv", rows), minutes / 60)
     assert result.report.ready and len(result.records) == 2
+
+
+@pytest.mark.parametrize("suffix", ["Z", "+0000", "+00:00"])
+def test_valid_timestamp_spellings_are_canonicalized_without_modifying_csv(tmp_path, suffix):
+    path = write_csv(tmp_path / "timestamps.csv", [
+        f"2026-01-01T00:00:00{suffix},1,0,0.5\n",
+        f"2026-01-01T00:30:00{suffix},2,1,0.9\n",
+    ])
+    before = hashlib.sha256(path.read_bytes()).hexdigest()
+
+    result = import_energy_csv(path, 0.5)
+
+    assert result.report.ready
+    assert [record.timestamp for record in result.records] == [
+        "2026-01-01T00:00:00+00:00",
+        "2026-01-01T00:30:00+00:00",
+    ]
+    parsed = [datetime.fromisoformat(record.timestamp) for record in result.records]
+    assert (parsed[1] - parsed[0]).total_seconds() == 1800
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == before
+
+
+def test_energy_input_summary_uses_validated_records_and_documented_units(tmp_path):
+    imported = import_energy_csv(write_csv(tmp_path / "summary.csv", [
+        "2026-01-01T00:00:00+00:00,10,0,0.4\n",
+        "2026-01-01T00:30:00+00:00,30,10,1.2\n",
+    ]), 0.5)
+
+    summary = summarize_energy_input(imported)
+
+    assert summary == {
+        "start_timestamp": "2026-01-01T00:00:00+00:00",
+        "end_timestamp": "2026-01-01T00:30:00+00:00",
+        "row_count": 2,
+        "step_hours": 0.5,
+        "load_kw": {"min": 10.0, "max": 30.0},
+        "pv_kw": {"min": 0.0, "max": 10.0},
+        "price_cny_per_kwh": {"min": 0.4, "max": 1.2},
+        "load_energy_kwh": 20.0,
+        "pv_available_energy_kwh": 5.0,
+        "units": {"power": "kW", "energy": "kWh", "price": "CNY/kWh", "step": "h"},
+    }
+    assert [record.load_kw for record in imported.records] == [Decimal("10"), Decimal("30")]
+
+
+def test_energy_input_summary_rejects_invalid_import(tmp_path):
+    imported = import_energy_csv(write_csv(
+        tmp_path / "invalid-summary.csv",
+        ["2026-01-01T00:00:00+00:00,,0,0.4\n"],
+    ), 1)
+
+    with pytest.raises(DataError, match="not ready"):
+        summarize_energy_input(imported)
 
 
 def test_utf8_bom_and_input_bytes_are_preserved(tmp_path):
