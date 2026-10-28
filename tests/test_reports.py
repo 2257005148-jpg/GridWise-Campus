@@ -1,0 +1,321 @@
+"""Verified HTML report generation and safe single-file publication."""
+
+from datetime import datetime, timezone
+from pathlib import Path
+import threading
+
+import pytest
+
+from gridwise import dashboard, reports
+from gridwise.data import import_energy_csv
+from gridwise.dashboard import (ComparedRun, ComparisonMetrics,
+                                HistoricalRunComparison)
+from gridwise.device import DeviceParameters
+
+
+SAMPLE = dashboard.ROOT / "examples" / "synthetic-day.csv"
+GENERATED_AT = datetime(2026, 10, 27, 12, 30, tzinfo=timezone.utc)
+
+
+def test_single_and_ab_html_reuse_verified_metrics_and_escape_input_source(tmp_path):
+    source = tmp_path / "校园 & energy.csv"
+    source.write_bytes(SAMPLE.read_bytes())
+    imported = import_energy_csv(source, 1)
+    runs_root = tmp_path / "runs"
+    cost = dashboard.run_comparison(imported, runs_root=runs_root)
+    capped = dashboard.run_comparison(imported, runs_root=runs_root, peak_cap_kw=55)
+
+    single = reports.build_single_run_html(
+        imported, cost.run_name, runs_root, generated_at=GENERATED_AT).decode("utf-8")
+    comparison = reports.build_comparison_html(
+        imported, cost.run_name, capped.run_name, runs_root,
+        generated_at=GENERATED_AT).decode("utf-8")
+
+    assert "<!doctype html>" in single.lower()
+    assert "校园 &amp; energy.csv" in single
+    assert "校园 & energy.csv" not in single
+    assert "2026-10-27T12:30:00+00:00" in single
+    assert "131.01" in single and "162.50" in single
+    assert "247.02" in single and "240.00" in single
+    assert "90.00" in single and "60.00" in single
+    assert "80.00 kWh" in single
+    assert "VERIFIED" in single
+    assert "grid_kw × price_cny_per_kwh × step_hours" in single
+    assert "不能证明输入真实性" in single
+
+    assert "A/B 公平对比报告" in comparison
+    assert "MATCHED" in comparison
+    assert "55.00 kW" in comparison
+    assert "+25.89 CNY" in comparison
+    assert "-3.12 kWh" in comparison
+    assert "-35.00 kW" in comparison
+    assert comparison.count("80.00 kWh") >= 2
+
+
+def test_html_report_publication_is_atomic_and_refuses_existing_or_directory(tmp_path):
+    target = tmp_path / "report.html"
+    payload = b"<!doctype html><html><body>verified</body></html>"
+
+    assert reports.publish_html_report(target, payload) == target
+    assert target.read_bytes() == payload
+
+    original = target.read_bytes()
+    with pytest.raises(reports.ReportError, match="already exists"):
+        reports.publish_html_report(
+            target, b"<!doctype html><html><body>replacement</body></html>")
+    assert target.read_bytes() == original
+
+    directory = tmp_path / "directory.html"
+    directory.mkdir()
+    with pytest.raises(reports.ReportError, match="regular file"):
+        reports.publish_html_report(directory, payload, overwrite=True)
+
+
+def test_report_replace_and_cleanup_double_failure_preserves_original_error_and_path(
+        tmp_path, monkeypatch):
+    target = tmp_path / "report.html"
+    target.write_bytes(b"original")
+    real_unlink = Path.unlink
+
+    monkeypatch.setattr(
+        reports.os, "replace",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("synthetic report replace failure")))
+
+    def deny_private_cleanup(path, *args, **kwargs):
+        if path.name.startswith(".gridwise-report-"):
+            raise PermissionError("synthetic report cleanup denial")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", deny_private_cleanup)
+    try:
+        with pytest.raises(reports.ReportError) as caught:
+            reports.publish_html_report(
+                target, b"<!doctype html><html><body>new report</body></html>",
+                overwrite=True)
+        residuals = list(tmp_path.glob(".gridwise-report-*.tmp"))
+        assert len(residuals) == 1
+        message = str(caught.value)
+        assert "synthetic report replace failure" in message
+        assert "synthetic report cleanup denial" in message
+        assert str(residuals[0].resolve()) in message
+        assert isinstance(caught.value.__cause__, RuntimeError)
+        assert target.read_bytes() == b"original"
+    finally:
+        monkeypatch.setattr(Path, "unlink", real_unlink)
+        for residual in tmp_path.glob(".gridwise-report-*.tmp"):
+            real_unlink(residual)
+
+
+def test_export_refuses_damaged_run_and_unmatched_comparison_without_output(
+        tmp_path, monkeypatch):
+    imported = import_energy_csv(SAMPLE, 1)
+    runs_root = tmp_path / "runs"
+    cost = dashboard.run_comparison(imported, runs_root=runs_root)
+    capped = dashboard.run_comparison(imported, runs_root=runs_root, peak_cap_kw=55)
+    damaged = runs_root / cost.run_name / "optimized.csv"
+    damaged.write_bytes(damaged.read_bytes() + b"damage")
+    single_target = tmp_path / "single.html"
+
+    with pytest.raises(reports.ReportError, match="single-run report unavailable"):
+        reports.export_single_run_report(
+            single_target, imported, cost.run_name, runs_root,
+            generated_at=GENERATED_AT)
+    assert not single_target.exists()
+
+    devices = DeviceParameters(120, 80, 40, 40, 30, 30, 0.95, 0.95)
+    unmatched = HistoricalRunComparison(
+        ComparedRun(cost.run_name, "cost", None, ComparisonMetrics(1, 2, 3), devices,
+                    "cost-mip-v1+sha256." + "1" * 64, "appsi_highs"),
+        ComparedRun(capped.run_name, "peak_cap", 55, ComparisonMetrics(2, 2, 2), devices,
+                    "peak-cap-mip-v1+sha256." + "1" * 64, "appsi_highs"),
+        ComparisonMetrics(1, 0, -1),
+        {"cost_cny": "CNY", "grid_energy_kwh": "kWh", "peak_grid_kw": "kW"},
+        "sha256:" + "2" * 64,
+        fairness_status="FAIL",
+    )
+    monkeypatch.setattr(reports, "compare_verified_runs", lambda *_args, **_kwargs: unmatched)
+    comparison_target = tmp_path / "comparison.html"
+    with pytest.raises(reports.ReportError, match="VERIFIED and MATCHED"):
+        reports.export_comparison_report(
+            comparison_target, imported, cost.run_name, capped.run_name, runs_root,
+            generated_at=GENERATED_AT)
+    assert not comparison_target.exists()
+
+
+@pytest.mark.parametrize("invalid_metric", [float("nan"), float("inf"), float("-inf")])
+def test_report_rejects_nonfinite_metric_before_publication(
+        tmp_path, monkeypatch, invalid_metric):
+    imported = import_energy_csv(SAMPLE, 1)
+    run_name = "run-" + "1" * 32
+    devices = DeviceParameters(120, 80, 40, 40, 30, 30, 0.95, 0.95)
+    chart = {
+        "metrics": {
+            "optimized": {"cost_cny": invalid_metric, "grid_energy_kwh": 1, "peak_grid_kw": 1},
+            "baseline": {"cost_cny": 1, "grid_energy_kwh": 1, "peak_grid_kw": 1},
+        },
+        "delta_optimized_minus_baseline": {
+            "cost_cny": 0, "grid_energy_kwh": 0, "peak_grid_kw": 0},
+    }
+    monkeypatch.setattr(
+        reports, "load_verified_comparison",
+        lambda *_args, **_kwargs: dashboard.DashboardResult(
+            chart, "VERIFIED", run_name, "cost", None, None, devices))
+    target = tmp_path / "invalid.html"
+
+    with pytest.raises(reports.ReportError, match="expected finite number"):
+        reports.export_single_run_report(
+            target, imported, run_name, tmp_path, generated_at=GENERATED_AT)
+    assert not target.exists()
+
+
+def test_report_rejects_missing_metric_before_publication(tmp_path, monkeypatch):
+    imported = import_energy_csv(SAMPLE, 1)
+    run_name = "run-" + "1" * 32
+    devices = DeviceParameters(120, 80, 40, 40, 30, 30, 0.95, 0.95)
+    chart = {
+        "metrics": {
+            "optimized": {"cost_cny": 1, "grid_energy_kwh": 1},
+            "baseline": {"cost_cny": 1, "grid_energy_kwh": 1, "peak_grid_kw": 1},
+        },
+        "delta_optimized_minus_baseline": {
+            "cost_cny": 0, "grid_energy_kwh": 0, "peak_grid_kw": 0},
+    }
+    monkeypatch.setattr(
+        reports, "load_verified_comparison",
+        lambda *_args, **_kwargs: dashboard.DashboardResult(
+            chart, "VERIFIED", run_name, "cost", None, None, devices))
+    target = tmp_path / "missing.html"
+
+    with pytest.raises(reports.ReportError, match="missing metric"):
+        reports.export_single_run_report(
+            target, imported, run_name, tmp_path, generated_at=GENERATED_AT)
+    assert not target.exists()
+
+
+def test_report_write_failure_leaves_no_final_or_private_file(tmp_path, monkeypatch):
+    target = tmp_path / "report.html"
+    payload = b"<!doctype html><html><body>verified</body></html>"
+    real_open = Path.open
+
+    def deny_private_write(path, *args, **kwargs):
+        if path.name.startswith(".gridwise-report-"):
+            raise PermissionError("synthetic report write denial")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", deny_private_write)
+
+    with pytest.raises(reports.ReportError, match="synthetic report write denial") as caught:
+        reports.publish_html_report(target, payload)
+    assert isinstance(caught.value.__cause__, PermissionError)
+    assert not target.exists()
+    assert list(tmp_path.glob(".gridwise-report-*.tmp")) == []
+
+
+@pytest.mark.parametrize("overwrite", [False, True])
+def test_cancel_before_final_report_commit_preserves_target(
+        tmp_path, monkeypatch, overwrite):
+    target = tmp_path / "report.html"
+    original = b"<!doctype html><html><body>original</body></html>"
+    if overwrite:
+        target.write_bytes(original)
+    payload = b"<!doctype html><html><body>replacement</body></html>"
+    cancellation = reports.ReportCancellation()
+    staged = threading.Event()
+    release = threading.Event()
+    real_fsync = reports.os.fsync
+    outcome = []
+
+    def pause_after_sync(file_descriptor):
+        real_fsync(file_descriptor)
+        staged.set()
+        assert release.wait(2), "test did not release staged report"
+
+    monkeypatch.setattr(reports.os, "fsync", pause_after_sync)
+
+    def worker():
+        try:
+            reports.publish_html_report(
+                target, payload, overwrite=overwrite,
+                cancel_event=cancellation)
+        except Exception as exc:
+            outcome.append(exc)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    assert staged.wait(2)
+    assert cancellation.set() is True
+    release.set()
+    thread.join(2)
+
+    assert not thread.is_alive()
+    assert len(outcome) == 1
+    assert isinstance(outcome[0], reports.ReportError)
+    assert "cancelled" in str(outcome[0])
+    if overwrite:
+        assert target.read_bytes() == original
+    else:
+        assert not target.exists()
+    assert list(tmp_path.glob(".gridwise-report-*.tmp")) == []
+
+
+def test_committed_report_rejects_late_cancellation(tmp_path):
+    target = tmp_path / "report.html"
+    payload = b"<!doctype html><html><body>verified</body></html>"
+    cancellation = reports.ReportCancellation()
+
+    assert reports.publish_html_report(
+        target, payload, cancel_event=cancellation) == target
+    assert cancellation.set() is False
+    assert target.read_bytes() == payload
+
+
+def test_cancel_after_render_prevents_report_publication(tmp_path, monkeypatch):
+    imported = import_energy_csv(SAMPLE, 1)
+    target = tmp_path / "cancelled.html"
+    cancel = threading.Event()
+    started = threading.Event()
+    release = threading.Event()
+    outcome = []
+
+    def delayed_build(*_args, **_kwargs):
+        started.set()
+        release.wait(2)
+        return b"<!doctype html><html><body>complete</body></html>"
+
+    monkeypatch.setattr(reports, "build_single_run_html", delayed_build)
+
+    def worker():
+        try:
+            reports.export_single_run_report(
+                target, imported, "run-" + "1" * 32, tmp_path,
+                cancel_event=cancel)
+        except Exception as exc:  # Capture the public worker outcome.
+            outcome.append(exc)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    assert started.wait(2)
+    cancel.set()
+    release.set()
+    thread.join(2)
+
+    assert not thread.is_alive()
+    assert len(outcome) == 1
+    assert isinstance(outcome[0], reports.ReportError)
+    assert "cancelled" in str(outcome[0])
+    assert not target.exists()
+
+
+def test_report_rejects_symlink_target_when_platform_allows_links(tmp_path):
+    outside = tmp_path / "outside.html"
+    outside.write_bytes(b"original")
+    target = tmp_path / "report.html"
+    try:
+        target.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+    payload = b"<!doctype html><html><body>verified</body></html>"
+
+    with pytest.raises(reports.ReportError, match="link or junction"):
+        reports.publish_html_report(target, payload, overwrite=True)
+    assert outside.read_bytes() == b"original"

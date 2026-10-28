@@ -12,6 +12,7 @@
 - 本机双语交互原型：文件选择、质量拦截、优化/基线对比与五张图 / Local bilingual desktop prototype with file selection, quality gating, comparison and five charts.
 - 桌面端显式选择纯电费或峰值上限模式，记录并复核运行策略 / Desktop selection of cost-only or peak-cap policy with traceable verified metadata.
 - 桌面端可校验并实际使用自定义电网与电池参数 / Validated custom grid and battery parameters used by the desktop solver.
+- 已验证单次运行与公平 A/B 对比可导出自包含 HTML 报告 / Verified runs and fair A/B comparisons can be exported as self-contained HTML reports.
 
 ## 安装与运行 / Install and run
 
@@ -47,6 +48,10 @@ v0.3.12 桌面默认仍为“纯电费优化”。选择“峰值上限优化”
 v0.3.13 将 [`examples/synthetic-day.csv`](examples/synthetic-day.csv) 作为可复制的自定义输入模板。合法的 `Z`、`+0000` 和 `+00:00` 时间戳在内存中规范化为带冒号的偏移形式，原 CSV 字节不修改；质量通过后显示时间范围、功率范围、价格范围及按 `Σ功率×step_hours` 计算的负荷/光伏可用电量。CSV 只替换时间序列、负荷、光伏和电价，电网及电池/SOC 参数仍来自合成设备场景；桌面最多运行 96 时段。详见[自定义 CSV 导入](docs/custom-csv-import.md)。/ The existing sample CSV is the copyable template. Valid offset spellings are normalized in memory, while the source bytes remain untouched. Input summaries do not change the fixed synthetic equipment assumptions or the 96-period desktop limit.
 
 v0.3.14 在桌面增加独立的[设备参数配置](docs/custom-device-parameters.md)：默认值仍取自合成模板，用户可修改电网购电上限、电池容量、充放电功率、以 kWh 表示的初末 SOC 及两种效率。参数改变会立即清除旧结果；实际值写入同次运行的 `scenario.json`，并由现有独立审计、清单哈希和安全读取复核。历史运行被选择后恢复其已校验设备参数。/ The desktop can now override validated grid and battery assumptions. Changes invalidate stale results, while the exact values are carried in the verified scenario and restored with a selected historical run.
+
+v0.3.15 可从同一运行根目录选择两个 `VALID` 历史运行进行[公平对比](docs/run-comparison.md)。控制层重新安全读取两个运行并用当前已检查 CSV 重算指标；只有场景原始字节摘要、求解器、模型源码摘要、时间序列、时间步和设备参数均匹配时，才显示电费、购电量和购电峰值及 `B − A`。优化模式和峰值上限是允许不同的策略变量。完整性通过、公平条件通过和指标变化是三种独立结论。/ Two verified historical runs can be compared only after safe rereading, current-input alignment and fair-context checks. Strategy may differ, while source data, solver, model source and equipment must match.
+
+v0.3.16 可在运行历史区导出[自包含 HTML 报告](docs/report-export.md)。单次报告会重新安全读取所选运行；A/B 报告会重新执行公平比较。报告只使用已校验控制层给出的指标和设备参数，不在导出层重算业务指标。默认拒绝覆盖已有文件，并通过目标目录中的私有临时文件完整写入后发布。/ The desktop exports self-contained UTF-8 HTML only after rereading the selected verified run or rerunning the fair A/B comparison. Existing files are refused by default, and report publication uses a complete private temporary in the target directory.
 
 v0.3.2 为小窗口和高 DPI 字体增加页面纵向滚动、按可用宽度排列的指标卡、短页签与保留时区的两行时间标签。v0.3.3 在创建 Tk 窗口前检查 Windows 进程的 DPI 感知状态；仅在仍为 unaware 时启用每显示器感知，不覆盖已有设置。只读日志可通过 Tab 到达，在操作控件上按 Page Up/Down 可滚动页面。忙碌条只表示任务正在运行。真实跨显示器 DPI 行为仍需有不同 DPI 显示器的环境验收。 / The desktop scrolls vertically, reflows metric cards, shortens chart tabs, and retains time zones on the axis. v0.3.3 enables per-monitor DPI awareness before Tk window creation only when the process is still unaware. The read-only log is reachable by Tab, and Page Up/Down scrolls the page from action controls. Native cross-monitor behavior remains unverified.
 

@@ -224,6 +224,142 @@ def test_peak_cap_cost_delta_requires_verified_same_input_cost_run(tmp_path):
     assert loaded.cost_mode_cost_cny == pytest.approx(peak.cost_mode_cost_cny)
 
 
+def test_verified_history_runs_compare_metrics_and_signed_delta(tmp_path):
+    imported = import_energy_csv(SAMPLE, 1)
+    cost = dashboard.run_comparison(imported, runs_root=tmp_path)
+    capped = dashboard.run_comparison(imported, runs_root=tmp_path, peak_cap_kw=55)
+
+    comparison = dashboard.compare_verified_runs(
+        imported, cost.run_name, capped.run_name, tmp_path)
+
+    assert comparison.integrity_status == "VERIFIED"
+    assert comparison.fairness_status == "MATCHED"
+    assert comparison.run_a.name == cost.run_name
+    assert comparison.run_a.optimization_mode == "cost"
+    assert comparison.run_b.name == capped.run_name
+    assert comparison.run_b.optimization_mode == "peak_cap"
+    assert comparison.run_b.peak_cap_kw == 55
+    assert comparison.units == {
+        "cost_cny": "CNY",
+        "grid_energy_kwh": "kWh",
+        "peak_grid_kw": "kW",
+    }
+    assert comparison.run_a.metrics.cost_cny == pytest.approx(131.01108033241)
+    assert comparison.run_b.metrics.cost_cny == pytest.approx(156.9)
+    assert comparison.delta_b_minus_a.cost_cny == pytest.approx(25.88891966759)
+    assert comparison.delta_b_minus_a.grid_energy_kwh == pytest.approx(
+        243.9 - 247.02216066482)
+    assert comparison.delta_b_minus_a.peak_grid_kw == pytest.approx(-35)
+
+
+def test_history_comparison_rejects_same_run_identifier(tmp_path):
+    imported = import_energy_csv(SAMPLE, 1)
+    created = dashboard.run_comparison(imported, runs_root=tmp_path)
+
+    with pytest.raises(dashboard.DashboardError, match="two distinct runs"):
+        dashboard.compare_verified_runs(
+            imported, created.run_name, created.run_name, tmp_path)
+
+
+def test_history_comparison_rejects_different_scenario_and_devices(tmp_path):
+    imported = import_energy_csv(SAMPLE, 1)
+    first = dashboard.run_comparison(imported, runs_root=tmp_path)
+    changed_devices = DeviceParameters(120, 60, 30, 30, 20, 20, 0.95, 0.95)
+    second = dashboard.run_comparison(
+        imported, runs_root=tmp_path, device_parameters=changed_devices)
+
+    with pytest.raises(dashboard.DashboardError, match="Scenario SHA-256 differs"):
+        dashboard.compare_verified_runs(
+            imported, first.run_name, second.run_name, tmp_path)
+
+
+@pytest.mark.parametrize(("field", "value", "message"), [
+    ("solver_name", "synthetic-other-solver", "Solver differs"),
+    ("model_version", "cost-mip-v1+sha256." + "0" * 64,
+     "Model source digest differs"),
+])
+def test_history_comparison_rejects_solver_or_model_context(
+        tmp_path, monkeypatch, field, value, message):
+    imported = import_energy_csv(SAMPLE, 1)
+    first = dashboard.run_comparison(imported, runs_root=tmp_path)
+    second = dashboard.run_comparison(imported, runs_root=tmp_path, peak_cap_kw=55)
+    real_read = dashboard.read_verified_run
+
+    def changed_context(path):
+        verified = real_read(path)
+        if Path(path).name == second.run_name:
+            metadata = dict(verified.metadata)
+            metadata[field] = value
+            return run_artifacts.VerifiedRun(verified.path, metadata, verified.files)
+        return verified
+
+    monkeypatch.setattr(dashboard, "read_verified_run", changed_context)
+    with pytest.raises(dashboard.DashboardError, match=message):
+        dashboard.compare_verified_runs(
+            imported, first.run_name, second.run_name, tmp_path)
+
+
+def test_history_comparison_rejects_baseline_metric_mismatch(tmp_path, monkeypatch):
+    imported = import_energy_csv(SAMPLE, 1)
+    first = dashboard.run_comparison(imported, runs_root=tmp_path)
+    second = dashboard.run_comparison(imported, runs_root=tmp_path, peak_cap_kw=55)
+    real_prepare = dashboard.prepare_visualization_data
+
+    def changed_baseline(source, summary):
+        chart = real_prepare(source, summary)
+        if summary["run"].get("optimization_mode") == "peak_cap":
+            chart["metrics"]["baseline"]["cost_cny"] += 0.01
+        return chart
+
+    monkeypatch.setattr(dashboard, "prepare_visualization_data", changed_baseline)
+    with pytest.raises(dashboard.DashboardError, match="Baseline metrics differ"):
+        dashboard.compare_verified_runs(
+            imported, first.run_name, second.run_name, tmp_path)
+
+
+@pytest.mark.parametrize("incomplete", [False, True])
+def test_history_comparison_rejects_damaged_or_incomplete_run(tmp_path, incomplete):
+    imported = import_energy_csv(SAMPLE, 1)
+    first = dashboard.run_comparison(imported, runs_root=tmp_path)
+    if incomplete:
+        second_name = "run-" + "0" * 32
+        (tmp_path / second_name).mkdir()
+    else:
+        second = dashboard.run_comparison(imported, runs_root=tmp_path, peak_cap_kw=55)
+        second_name = second.run_name
+        target = tmp_path / second_name / "optimized.csv"
+        target.write_bytes(target.read_bytes() + b"damage")
+
+    with pytest.raises(dashboard.DashboardError, match="Historical runs unavailable"):
+        dashboard.compare_verified_runs(imported, first.run_name, second_name, tmp_path)
+
+
+def test_history_comparison_rejects_current_csv_mismatch(tmp_path):
+    imported = import_energy_csv(SAMPLE, 1)
+    first = dashboard.run_comparison(imported, runs_root=tmp_path)
+    second = dashboard.run_comparison(imported, runs_root=tmp_path, peak_cap_kw=55)
+    different = write_energy_csv(tmp_path / "different.csv", [
+        "2026-01-01T00:00:00+00:00,1,0,0.5\n",
+    ])
+
+    with pytest.raises(dashboard.DashboardError, match="row count mismatch"):
+        dashboard.compare_verified_runs(
+            import_energy_csv(different, 1), first.run_name, second.run_name, tmp_path)
+
+
+def test_cancelled_history_comparison_never_reads_files(tmp_path, monkeypatch):
+    imported = import_energy_csv(SAMPLE, 1)
+    cancelled = threading.Event()
+    cancelled.set()
+    monkeypatch.setattr(dashboard, "read_verified_run",
+                        lambda _path: pytest.fail("cancelled comparison must not read"))
+
+    with pytest.raises(dashboard.DashboardError, match="cancelled"):
+        dashboard.compare_verified_runs(
+            imported, "run-" + "0" * 32, "run-" + "1" * 32,
+            tmp_path, cancel_event=cancelled)
+
+
 def test_peak_cap_above_scenario_grid_limit_fails_before_publication(tmp_path, monkeypatch):
     imported = import_energy_csv(SAMPLE, 1)
     monkeypatch.setattr(dashboard, "publish_run", lambda *_args, **_kwargs:

@@ -18,7 +18,10 @@ import tkinter as tk
 from tkinter import ttk
 
 import gridwise.desktop as desktop
-from gridwise.dashboard import DashboardError, DashboardResult
+from gridwise.dashboard import (ComparedRun, ComparisonMetrics, DashboardError,
+                                DashboardResult, HistoricalRunComparison,
+                                RunHistoryEntry)
+from gridwise.device import DeviceParameters
 
 
 _interpreter = None
@@ -498,7 +501,10 @@ def test_read_only_log_is_keyboard_reachable_and_page_can_scroll():
         assert str(app.quality) in seen
         assert str(app.run_button) in seen
         assert str(app.history_combo) in seen
-        assert app.quality.tk_focusPrev() == app.history_combo
+        assert str(app.compare_a_combo) in seen
+        assert str(app.compare_b_combo) in seen
+        assert str(app.comparison_table) in seen
+        assert app.quality.tk_focusPrev() == app.comparison_table
         app.check_button.focus_set()
         root.update()
         before = app._viewport.yview()[0]
@@ -559,6 +565,308 @@ def test_verified_desktop_two_runs_and_input_change(tmp_path):
         assert app.imported is None
         assert app.load_button.instate(["disabled"])
     finally:
+        close_desktop(root, app)
+
+
+def test_history_comparison_controls_call_controller_and_show_verified_table(monkeypatch):
+    root, app = new_desktop()
+    devices = DeviceParameters(120, 80, 40, 40, 30, 30, 0.95, 0.95)
+    name_a = "run-" + "a" * 32
+    name_b = "run-" + "b" * 32
+    entries = [
+        RunHistoryEntry(name_a, "VALID", "verified", "cost", None),
+        RunHistoryEntry(name_b, "VALID", "verified", "peak_cap", 55),
+    ]
+    result = HistoricalRunComparison(
+        ComparedRun(name_a, "cost", None,
+                    ComparisonMetrics(131.01108033241, 247.02216066482, 90),
+                    devices, "cost-mip-v1+sha256." + "1" * 64, "appsi_highs"),
+        ComparedRun(name_b, "peak_cap", 55,
+                    ComparisonMetrics(156.9, 243.9, 55),
+                    devices, "peak-cap-mip-v1+sha256." + "1" * 64, "appsi_highs"),
+        ComparisonMetrics(25.88891966759, 243.9 - 247.02216066482, -35),
+        {"cost_cny": "CNY", "grid_energy_kwh": "kWh", "peak_grid_kw": "kW"},
+        "sha256:" + "2" * 64,
+    )
+    captured = []
+
+    def compare(imported, run_a, run_b, runs_root, *, cancel_event):
+        captured.append((imported, run_a, run_b, runs_root, cancel_event))
+        return result
+
+    monkeypatch.setattr(desktop, "compare_verified_runs", compare)
+    try:
+        app._show_history(entries)
+        app.selected_compare_a.set(app._history_label(entries[0]))
+        app.selected_compare_b.set(app._history_label(entries[1]))
+        app._select_comparison()
+        assert app.compare_button.instate(["!disabled"])
+
+        app._compare_history()
+        pump(root, lambda: app._active_kind is None)
+
+        assert len(captured) == 1
+        assert captured[0][1:3] == (name_a, name_b)
+        assert app.history_comparison == result
+        assert app.comparison_table.item("cost_cny", "values") == (
+            "购电费用 / Cost", "131.01 CNY", "156.90 CNY", "+25.89 CNY")
+        assert app.comparison_table.item("grid_energy_kwh", "values")[3].endswith("kWh")
+        assert app.comparison_table.item("peak_grid_kw", "values")[3] == "-35.00 kW"
+        assert "VERIFIED" in app.comparison_status.get()
+        assert "MATCHED" in app.comparison_status.get()
+        assert "55" in app.comparison_context.get()
+        assert "80" in app.comparison_context.get()
+    finally:
+        close_desktop(root, app)
+
+
+def test_history_comparison_is_invalidated_by_device_and_runs_root_changes():
+    root, app = new_desktop()
+    try:
+        app.history_comparison = object()
+        app.comparison_status.set("VERIFIED")
+        app.comparison_table.item(
+            "cost_cny", values=("购电费用 / Cost", "1.00 CNY", "2.00 CNY", "+1.00 CNY"))
+
+        app.device_values["capacity_kwh"].set("60")
+        root.update()
+
+        assert app.history_comparison is None
+        assert app.comparison_table.item("cost_cny", "values")[1:] == ("—", "—", "—")
+        assert "No verified comparison" in app.comparison_status.get()
+
+        app.history_comparison = object()
+        app.selected_compare_a.set("run-a [VALID]")
+        app.selected_compare_b.set("run-b [VALID]")
+        app.runs_root.set(str(Path(app.runs_root.get()) / "different-root"))
+        root.update()
+
+        assert app.history_comparison is None
+        assert app.selected_compare_a.get() == ""
+        assert app.selected_compare_b.get() == ""
+        assert app.compare_a_combo.cget("values") in ("", ())
+        assert app.compare_b_combo.cget("values") in ("", ())
+    finally:
+        close_desktop(root, app)
+
+
+def test_late_history_comparison_result_cannot_replace_invalidated_input(monkeypatch, tmp_path):
+    root, app = new_desktop()
+    name_a = "run-" + "a" * 32
+    name_b = "run-" + "b" * 32
+    entries = [
+        RunHistoryEntry(name_a, "VALID", "verified", "cost", None),
+        RunHistoryEntry(name_b, "VALID", "verified", "peak_cap", 55),
+    ]
+    started = threading.Event()
+    release = threading.Event()
+
+    def delayed_compare(*_args, **_kwargs):
+        started.set()
+        release.wait(2)
+        devices = DeviceParameters(120, 80, 40, 40, 30, 30, 0.95, 0.95)
+        return HistoricalRunComparison(
+            ComparedRun(name_a, "cost", None, ComparisonMetrics(1, 2, 3), devices,
+                        "cost-mip-v1+sha256." + "1" * 64, "appsi_highs"),
+            ComparedRun(name_b, "peak_cap", 55, ComparisonMetrics(2, 2, 2), devices,
+                        "peak-cap-mip-v1+sha256." + "1" * 64, "appsi_highs"),
+            ComparisonMetrics(1, 0, -1),
+            {"cost_cny": "CNY", "grid_energy_kwh": "kWh", "peak_grid_kw": "kW"},
+            "sha256:" + "2" * 64,
+        )
+
+    monkeypatch.setattr(desktop, "compare_verified_runs", delayed_compare)
+    try:
+        app._show_history(entries)
+        app.selected_compare_a.set(app._history_label(entries[0]))
+        app.selected_compare_b.set(app._history_label(entries[1]))
+        app._select_comparison()
+        app._compare_history()
+        pump(root, started.is_set)
+
+        app.path.set(str(tmp_path / "different.csv"))
+        assert app.history_comparison is None
+        release.set()
+        pump(root, lambda: not app._pending_jobs)
+        root.update()
+
+        assert app.history_comparison is None
+        assert "VERIFIED" not in app.comparison_status.get()
+        assert app.imported is None
+    finally:
+        release.set()
+        close_desktop(root, app)
+
+
+def test_loading_history_with_different_devices_immediately_invalidates_comparison(tmp_path):
+    runs_root = tmp_path / "runs"
+    root, app = new_desktop(runs_root=runs_root)
+    custom_devices = DeviceParameters(120, 60, 30, 30, 20, 20, 0.95, 0.95)
+    try:
+        cost = desktop.run_comparison(app.imported, runs_root=runs_root)
+        capped = desktop.run_comparison(app.imported, runs_root=runs_root, peak_cap_kw=55)
+        custom = desktop.run_comparison(
+            app.imported, runs_root=runs_root, device_parameters=custom_devices)
+        entries = desktop.list_run_history(runs_root)
+        app._show_history(entries)
+
+        app.selected_compare_a.set(app._history_label(app._history_entries[cost.run_name]))
+        app.selected_compare_b.set(app._history_label(app._history_entries[capped.run_name]))
+        app._select_comparison()
+        app._compare_history()
+        pump(root, lambda: app._active_kind is None)
+        assert app.history_comparison is not None
+        assert "VERIFIED" in app.comparison_status.get()
+
+        app.selected_run.set(app._history_label(app._history_entries[custom.run_name]))
+        app._load_history()
+
+        assert app.history_comparison is None
+        assert "VERIFIED" not in app.comparison_status.get()
+        pump(root, lambda: app._active_kind is None)
+        assert app.device_values["capacity_kwh"].get() == "60"
+        assert app.chart is not None
+    finally:
+        close_desktop(root, app)
+
+
+def test_report_export_controls_use_verified_background_workflows(monkeypatch, tmp_path):
+    root, app = new_desktop()
+    devices = DeviceParameters(120, 80, 40, 40, 30, 30, 0.95, 0.95)
+    name_a = "run-" + "a" * 32
+    name_b = "run-" + "b" * 32
+    entries = [
+        RunHistoryEntry(name_a, "VALID", "verified", "cost", None),
+        RunHistoryEntry(name_b, "VALID", "verified", "peak_cap", 55),
+    ]
+    comparison = HistoricalRunComparison(
+        ComparedRun(name_a, "cost", None, ComparisonMetrics(131, 247, 90), devices,
+                    "cost-mip-v1+sha256." + "1" * 64, "appsi_highs"),
+        ComparedRun(name_b, "peak_cap", 55, ComparisonMetrics(157, 244, 55), devices,
+                    "peak-cap-mip-v1+sha256." + "1" * 64, "appsi_highs"),
+        ComparisonMetrics(26, -3, -35),
+        {"cost_cny": "CNY", "grid_energy_kwh": "kWh", "peak_grid_kw": "kW"},
+        "sha256:" + "2" * 64,
+    )
+    single_target = tmp_path / "single.html"
+    comparison_target = tmp_path / "comparison.html"
+    selected_targets = iter((single_target, comparison_target))
+    calls = []
+
+    monkeypatch.setattr(
+        desktop.filedialog, "asksaveasfilename",
+        lambda **_kwargs: str(next(selected_targets)))
+
+    def export_single(target, imported, run_name, runs_root, *, cancel_event):
+        calls.append(("single", target, imported, run_name, runs_root, cancel_event))
+        return target
+
+    def export_comparison(target, imported, run_a, run_b, runs_root, *, cancel_event):
+        calls.append(("comparison", target, imported, run_a, run_b, runs_root, cancel_event))
+        return target
+
+    monkeypatch.setattr(desktop, "export_single_run_report", export_single)
+    monkeypatch.setattr(desktop, "export_comparison_report", export_comparison)
+    try:
+        app._show_history(entries)
+        app.selected_run.set(app._history_label(entries[0]))
+        app._select_history()
+        assert app.export_run_button.instate(["!disabled"])
+        app._export_selected_run()
+        pump(root, lambda: app._active_kind is None)
+        assert calls[0][0:4] == ("single", single_target, app.imported, name_a)
+        assert "single.html" in app.status.get()
+
+        app.selected_compare_a.set(app._history_label(entries[0]))
+        app.selected_compare_b.set(app._history_label(entries[1]))
+        app._show_history_comparison(comparison)
+        assert app.export_comparison_button.instate(["!disabled"])
+        app._export_history_comparison()
+        pump(root, lambda: app._active_kind is None)
+        assert calls[1][0:5] == (
+            "comparison", comparison_target, app.imported, name_a, name_b)
+        assert "comparison.html" in app.status.get()
+
+        app.device_values["capacity_kwh"].set("60")
+        root.update()
+        assert app.export_run_button.instate(["disabled"])
+        assert app.export_comparison_button.instate(["disabled"])
+    finally:
+        close_desktop(root, app)
+
+
+def test_late_report_export_result_cannot_override_changed_device_state(monkeypatch, tmp_path):
+    root, app = new_desktop()
+    name = "run-" + "a" * 32
+    entry = RunHistoryEntry(name, "VALID", "verified", "cost", None)
+    started = threading.Event()
+    release = threading.Event()
+    target = tmp_path / "late.html"
+
+    monkeypatch.setattr(
+        desktop.filedialog, "asksaveasfilename", lambda **_kwargs: str(target))
+
+    def delayed_export(_target, _imported, _name, _root, *, cancel_event):
+        started.set()
+        cancel_event.wait(2)
+        release.wait(2)
+        return target
+
+    monkeypatch.setattr(desktop, "export_single_run_report", delayed_export)
+    try:
+        app._show_history([entry])
+        app.selected_run.set(app._history_label(entry))
+        app._select_history()
+        app._export_selected_run()
+        pump(root, started.is_set)
+
+        app.device_values["capacity_kwh"].set("60")
+        root.update()
+        release.set()
+        pump(root, lambda: not app._pending_jobs)
+        root.update()
+
+        assert "Report exported" not in app.status.get()
+        assert "设备参数已改变" in app.status.get() or "Device parameters changed" in app.status.get()
+        assert app.export_run_button.instate(["disabled"])
+    finally:
+        release.set()
+        close_desktop(root, app)
+
+
+def test_report_cancel_after_commit_keeps_success_status(monkeypatch, tmp_path):
+    root, app = new_desktop()
+    name = "run-" + "a" * 32
+    entry = RunHistoryEntry(name, "VALID", "verified", "cost", None)
+    target = tmp_path / "committed.html"
+    committed = threading.Event()
+    release = threading.Event()
+
+    monkeypatch.setattr(
+        desktop.filedialog, "asksaveasfilename", lambda **_kwargs: str(target))
+
+    def committed_export(_target, _imported, _name, _root, *, cancel_event):
+        cancel_event.commit(committed.set)
+        assert release.wait(2)
+        return target
+
+    monkeypatch.setattr(desktop, "export_single_run_report", committed_export)
+    try:
+        app._show_history([entry])
+        app.selected_run.set(app._history_label(entry))
+        app._select_history()
+        app._export_selected_run()
+        pump(root, committed.is_set)
+
+        app._cancel_job()
+
+        assert not app._cancel_requested
+        assert "already committed" in app.status.get()
+        release.set()
+        pump(root, lambda: app._active_kind is None)
+        assert "Report exported" in app.status.get()
+    finally:
+        release.set()
         close_desktop(root, app)
 
 

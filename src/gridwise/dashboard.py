@@ -43,6 +43,41 @@ class RunHistoryEntry:
     peak_cap_kw: float | None = None
 
 
+@dataclass(frozen=True)
+class ComparisonMetrics:
+    """The three independently recalculated metrics shown to the user."""
+
+    cost_cny: float
+    grid_energy_kwh: float
+    peak_grid_kw: float
+
+
+@dataclass(frozen=True)
+class ComparedRun:
+    """One verified side of a historical-run comparison."""
+
+    name: str
+    optimization_mode: str
+    peak_cap_kw: float | None
+    metrics: ComparisonMetrics
+    device_parameters: DeviceParameters
+    model_version: str
+    solver_name: str
+
+
+@dataclass(frozen=True)
+class HistoricalRunComparison:
+    """A complete two-run comparison returned only after all checks pass."""
+
+    run_a: ComparedRun
+    run_b: ComparedRun
+    delta_b_minus_a: ComparisonMetrics
+    units: dict[str, str]
+    scenario_sha256: str
+    integrity_status: str = "VERIFIED"
+    fairness_status: str = "MATCHED"
+
+
 def default_runs_root() -> Path:
     return Path(tempfile.gettempdir()) / "gridwise-campus-runs"
 
@@ -67,6 +102,82 @@ def _devices_from_verified(verified: VerifiedRun) -> DeviceParameters:
 def _model_source_digest(version: str) -> str | None:
     marker = "+sha256."
     return version.split(marker, 1)[1] if marker in version else None
+
+
+def _comparison_metrics(chart: dict, kind: str = "optimized") -> ComparisonMetrics:
+    metrics = chart["metrics"][kind]
+    return ComparisonMetrics(float(metrics["cost_cny"]),
+                             float(metrics["grid_energy_kwh"]),
+                             float(metrics["peak_grid_kw"]))
+
+
+def _compared_run(verified: VerifiedRun, chart: dict) -> ComparedRun:
+    mode, cap = _policy_from_verified(verified)
+    return ComparedRun(verified.path.name, mode, cap,
+                       _comparison_metrics(chart),
+                       _devices_from_verified(verified),
+                       str(verified.metadata["model_version"]),
+                       str(verified.metadata["solver_name"]))
+
+
+def compare_verified_runs(imported: ImportResult, run_a_name: str, run_b_name: str,
+                          runs_root: Path, *,
+                          cancel_event: threading.Event | None = None) -> HistoricalRunComparison:
+    """Safely reread and fairly compare two complete historical runs."""
+    if not imported.report.ready or not imported.records:
+        raise DashboardError("CSV quality check failed; history cannot be compared")
+    if not RUN_NAME.fullmatch(run_a_name) or not RUN_NAME.fullmatch(run_b_name):
+        raise DashboardError("运行名称无效 / Invalid run name")
+    if run_a_name == run_b_name:
+        raise DashboardError("请选择两个不同运行 / Select two distinct runs")
+    if cancel_event is not None and cancel_event.is_set():
+        raise DashboardError("history comparison cancelled")
+    try:
+        verified_a = read_verified_run(Path(runs_root) / run_a_name)
+        if cancel_event is not None and cancel_event.is_set():
+            raise DashboardError("history comparison cancelled")
+        verified_b = read_verified_run(Path(runs_root) / run_b_name)
+        if cancel_event is not None and cancel_event.is_set():
+            raise DashboardError("history comparison cancelled")
+        chart_a = _chart_from_verified(imported, verified_a)
+        chart_b = _chart_from_verified(imported, verified_b)
+        scenario_digest = verified_a.metadata["scenario_sha256"]
+        if verified_b.metadata["scenario_sha256"] != scenario_digest:
+            raise DashboardError("场景摘要不一致 / Scenario SHA-256 differs")
+        if verified_a.metadata["solver_name"] != verified_b.metadata["solver_name"]:
+            raise DashboardError("求解器不一致 / Solver differs")
+        digest_a = _model_source_digest(str(verified_a.metadata["model_version"]))
+        digest_b = _model_source_digest(str(verified_b.metadata["model_version"]))
+        if digest_a is None or digest_b is None or digest_a != digest_b:
+            raise DashboardError("模型源码摘要不一致 / Model source digest differs")
+        devices_a = _devices_from_verified(verified_a)
+        devices_b = _devices_from_verified(verified_b)
+        if devices_a != devices_b:
+            raise DashboardError("设备参数不一致 / Device parameters differ")
+        baseline_a = _comparison_metrics(chart_a, "baseline")
+        baseline_b = _comparison_metrics(chart_b, "baseline")
+        if any(not math.isclose(getattr(baseline_a, field), getattr(baseline_b, field),
+                                rel_tol=0, abs_tol=1e-5)
+               for field in ("cost_cny", "grid_energy_kwh", "peak_grid_kw")):
+            raise DashboardError("无储能基线指标不一致 / Baseline metrics differ")
+        run_a = _compared_run(verified_a, chart_a)
+        run_b = _compared_run(verified_b, chart_b)
+        delta = ComparisonMetrics(
+            run_b.metrics.cost_cny - run_a.metrics.cost_cny,
+            run_b.metrics.grid_energy_kwh - run_a.metrics.grid_energy_kwh,
+            run_b.metrics.peak_grid_kw - run_a.metrics.peak_grid_kw,
+        )
+        return HistoricalRunComparison(
+            run_a, run_b, delta,
+            {"cost_cny": "CNY", "grid_energy_kwh": "kWh", "peak_grid_kw": "kW"},
+            str(scenario_digest),
+        )
+    except DashboardError:
+        raise
+    except (RunArtifactError, DataError, DeviceParameterError, OSError,
+            ValueError, KeyError, TypeError) as exc:
+        raise DashboardError(
+            f"历史运行不可比较 / Historical runs unavailable for comparison: {exc}") from exc
 
 
 def _matching_cost_mode_cost(imported: ImportResult, target: VerifiedRun,

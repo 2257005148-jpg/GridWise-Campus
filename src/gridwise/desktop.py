@@ -17,11 +17,14 @@ except ImportError:  # Pure chart selection remains usable without a GUI runtime
     ttk = None
 
 from .dashboard import (DashboardError, MAX_INTERACTIVE_PERIODS, ROOT,
-                        default_device_parameters, default_runs_root,
-                        list_run_history, load_verified_comparison, run_comparison)
+                        compare_verified_runs, default_device_parameters,
+                        default_runs_root, list_run_history,
+                        load_verified_comparison, run_comparison)
 from .data import import_energy_csv, summarize_energy_input
 from .device import (DEVICE_FIELDS, DeviceParameterError, DeviceParameters,
                      parse_device_parameters)
+from .reports import (ReportCancellation, export_comparison_report,
+                      export_single_run_report)
 from .run_storage import (RunStorageError, default_config_path, load_saved_runs_root,
                           save_runs_root)
 
@@ -118,7 +121,14 @@ class EnergyDesktop:
             "已保存的本地目录 / Saved local directory" if saved is not None else
             "临时目录；选择并保存可持久保留 / Temporary; choose and save for persistence"))
         self.selected_run = tk.StringVar()
+        self.selected_compare_a = tk.StringVar()
+        self.selected_compare_b = tk.StringVar()
+        self.comparison_status = tk.StringVar(
+            value="尚未比较 / No verified comparison yet")
+        self.comparison_context = tk.StringVar(
+            value="选择两个有效运行 / Select two valid runs")
         self._history_entries = {}
+        self.history_comparison = None
         self.status = tk.StringVar(value="请选择 CSV 并检查质量 / Select a CSV and check quality")
         self.imported = None
         self.input_summary = None
@@ -316,6 +326,59 @@ class EnergyDesktop:
         history.columnconfigure(2, weight=1)
         self.history_combo.bind("<<ComboboxSelected>>", self._select_history)
 
+        ttk.Label(history, text="历史运行公平对比 / Fair historical comparison").grid(
+            row=5, column=0, columnspan=5, sticky="w", pady=(10, 2))
+        ttk.Label(history, text="运行 A / Run A").grid(row=6, column=0, columnspan=2,
+                                                       sticky="w")
+        ttk.Label(history, text="运行 B / Run B").grid(row=6, column=2, columnspan=2,
+                                                       sticky="w", padx=(8, 0))
+        self.compare_a_combo = ttk.Combobox(
+            history, textvariable=self.selected_compare_a, state="readonly", values=())
+        self.compare_a_combo.grid(row=7, column=0, columnspan=2, sticky="ew", pady=5)
+        self.compare_b_combo = ttk.Combobox(
+            history, textvariable=self.selected_compare_b, state="readonly", values=())
+        self.compare_b_combo.grid(row=7, column=2, columnspan=2, sticky="ew",
+                                  padx=(8, 0), pady=5)
+        self.compare_button = ttk.Button(
+            history, text="公平对比 / Compare", command=self._compare_history,
+            state="disabled")
+        self.compare_button.grid(row=7, column=4, padx=(8, 0))
+        self.compare_a_combo.bind("<<ComboboxSelected>>", self._comparison_selection_changed)
+        self.compare_b_combo.bind("<<ComboboxSelected>>", self._comparison_selection_changed)
+        ttk.Label(history, textvariable=self.comparison_status, style="Sub.TLabel",
+                  wraplength=960).grid(row=8, column=0, columnspan=5, sticky="w")
+        ttk.Label(history, textvariable=self.comparison_context, style="Sub.TLabel",
+                  wraplength=960).grid(row=9, column=0, columnspan=5, sticky="w",
+                                       pady=(2, 5))
+        columns = ("metric", "run_a", "run_b", "delta")
+        self.comparison_table = ttk.Treeview(
+            history, columns=columns, show="headings", height=3,
+            selectmode="none", takefocus=1)
+        for column, heading, width in (
+                ("metric", "指标 / Metric", 210),
+                ("run_a", "运行 A / Run A", 170),
+                ("run_b", "运行 B / Run B", 170),
+                ("delta", "B − A", 170)):
+            self.comparison_table.heading(column, text=heading)
+            self.comparison_table.column(column, width=width, minwidth=110,
+                                         anchor="w" if column == "metric" else "e")
+        for key, label in (("cost_cny", "购电费用 / Cost"),
+                           ("grid_energy_kwh", "购电量 / Grid energy"),
+                           ("peak_grid_kw", "购电峰值 / Grid peak")):
+            self.comparison_table.insert("", "end", iid=key,
+                                         values=(label, "—", "—", "—"))
+        self.comparison_table.grid(row=10, column=0, columnspan=5, sticky="ew")
+        report_actions = ttk.Frame(history)
+        report_actions.grid(row=11, column=0, columnspan=5, sticky="w", pady=(8, 0))
+        self.export_run_button = ttk.Button(
+            report_actions, text="导出所选运行报告 / Export selected run",
+            command=self._export_selected_run, state="disabled")
+        self.export_run_button.pack(side="left")
+        self.export_comparison_button = ttk.Button(
+            report_actions, text="导出 A/B 报告 / Export A/B report",
+            command=self._export_history_comparison, state="disabled")
+        self.export_comparison_button.pack(side="left", padx=(8, 0))
+
         ttk.Label(outer, text="数据质量与运行日志 / Data quality and run log").pack(anchor="w")
         quality_frame = ttk.Frame(outer)
         quality_frame.pack(fill="x", pady=(10, 14))
@@ -447,6 +510,20 @@ class EnergyDesktop:
         for canvas, specification in self.chart_canvases:
             self._draw(canvas, specification)
 
+    def _clear_history_comparison(self, *, clear_selection=True):
+        self.history_comparison = None
+        self.comparison_status.set("尚未比较 / No verified comparison yet")
+        self.comparison_context.set("选择两个有效运行 / Select two valid runs")
+        for key, label in (("cost_cny", "购电费用 / Cost"),
+                           ("grid_energy_kwh", "购电量 / Grid energy"),
+                           ("peak_grid_kw", "购电峰值 / Grid peak")):
+            self.comparison_table.item(key, values=(label, "—", "—", "—"))
+        if clear_selection:
+            self.selected_compare_a.set("")
+            self.selected_compare_b.set("")
+        self.compare_button.configure(state="disabled")
+        self.export_comparison_button.configure(state="disabled")
+
     def _invalidate(self, *_):
         if self._closing:
             return
@@ -462,8 +539,10 @@ class EnergyDesktop:
         self.check_button.configure(state="normal")
         self.run_button.configure(state="disabled")
         self.load_button.configure(state="disabled")
+        self.export_run_button.configure(state="disabled")
         self.refresh_button.configure(state="normal")
         self.selected_run.set("")
+        self._clear_history_comparison()
         self.cancel_button.configure(state="disabled")
         self.status.set("输入已改变，请重新检查 / Input changed; check again")
         self._clear_results()
@@ -473,6 +552,8 @@ class EnergyDesktop:
         self._invalidate()
         self.storage_notice.set("目录未保存 / Directory not saved")
         self.history_combo.configure(values=())
+        self.compare_a_combo.configure(values=())
+        self.compare_b_combo.configure(values=())
         self._history_entries.clear()
 
     def _policy_changed(self, *_):
@@ -487,7 +568,9 @@ class EnergyDesktop:
         self._stop_progress()
         self.selected_run.set("")
         self.load_button.configure(state="disabled")
+        self.export_run_button.configure(state="disabled")
         self._clear_results()
+        self._clear_history_comparison()
         self.status.set("优化模式已改变；请重新运行 / Optimization mode changed; run again")
         if self.imported is not None and self.imported.report.ready and \
                 len(self.imported.records) <= MAX_INTERACTIVE_PERIODS:
@@ -506,7 +589,9 @@ class EnergyDesktop:
         self._stop_progress()
         self.selected_run.set("")
         self.load_button.configure(state="disabled")
+        self.export_run_button.configure(state="disabled")
         self._clear_results()
+        self._clear_history_comparison()
         self._update_device_source()
         self.status.set("设备参数已改变；旧结果已失效 / Device parameters changed; prior results invalidated")
         if self.imported is not None and self.imported.report.ready and \
@@ -536,6 +621,10 @@ class EnergyDesktop:
         device_state = "disabled" if busy else "normal"
         for entry in self.device_entries.values():
             entry.configure(state=device_state)
+        comparison_state = "disabled" if busy else "readonly"
+        self.compare_a_combo.configure(state=comparison_state)
+        self.compare_b_combo.configure(state=comparison_state)
+        self._select_comparison()
 
     def _device_parameters_value(self) -> DeviceParameters:
         try:
@@ -571,7 +660,8 @@ class EnergyDesktop:
         self._generation += 1
         generation = self._generation
         self._pending_jobs.add(generation)
-        cancel = threading.Event()
+        cancel = (ReportCancellation() if kind in ("report_single", "report_compare")
+                  else threading.Event())
         self._cancel = cancel
         self._cancel_requested = False
         self._active_kind = kind
@@ -579,6 +669,9 @@ class EnergyDesktop:
         self.check_button.configure(state="disabled")
         self.refresh_button.configure(state="disabled")
         self.load_button.configure(state="disabled")
+        self.compare_button.configure(state="disabled")
+        self.export_run_button.configure(state="disabled")
+        self.export_comparison_button.configure(state="disabled")
         self.save_root_button.configure(state="disabled")
         self.cancel_button.configure(state="normal")
         self.cancel_button.focus_set()
@@ -622,7 +715,10 @@ class EnergyDesktop:
             self.save_root_button.configure(state="normal")
             self.cancel_button.configure(state="disabled")
             if cancelled:
-                self._clear_results()
+                if kind == "history_compare":
+                    self._clear_history_comparison(clear_selection=False)
+                elif kind not in ("report_single", "report_compare"):
+                    self._clear_results()
                 if kind in ("run", "history_load") and self.imported is not None:
                     self.run_button.configure(state="normal")
                 self.status.set("已取消 / Cancelled")
@@ -635,6 +731,10 @@ class EnergyDesktop:
                         self._show_quality(value)
                     elif kind == "history":
                         self._show_history(value)
+                    elif kind == "history_compare":
+                        self._show_history_comparison(value)
+                    elif kind in ("report_single", "report_compare"):
+                        self._show_report_export(value)
                     else:
                         self._show_result(value)
                 except Exception as exc:
@@ -643,13 +743,19 @@ class EnergyDesktop:
                 (self.run_button if kind in ("run", "history_load") and self.imported is not None
                  else self.check_button).focus_set()
             self._select_history()
+            self._select_comparison()
         self._poll_id = self.root.after(50, self._poll)
 
     def _cancel_job(self, _event=None):
         if self._closing or self._cancel is None or self._cancel_requested:
             return
+        accepted = self._cancel.set()
+        if accepted is False:
+            self.cancel_button.configure(state="disabled")
+            self.status.set(
+                "报告已完成最终发布；取消未生效 / Report publication already committed")
+            return
         self._cancel_requested = True
-        self._cancel.set()
         self.cancel_button.configure(state="disabled")
         self.status.set("正在取消 / Cancelling…")
 
@@ -658,6 +764,15 @@ class EnergyDesktop:
         self.progress.pack_forget()
 
     def _show_failure(self, kind, error):
+        if kind in ("report_single", "report_compare"):
+            self.status.set("报告导出失败；详见日志 / Report export failed; see log")
+            self._append_log(f"{type(error).__name__}: {error}")
+            return
+        if kind == "history_compare":
+            self._clear_history_comparison(clear_selection=False)
+            self.status.set("历史对比失败；详见日志 / History comparison failed; see log")
+            self._append_log(f"{type(error).__name__}: {error}")
+            return
         self._clear_results()
         if kind in ("run", "history_load") and self.imported is not None:
             self.run_button.configure(state="normal")
@@ -677,6 +792,9 @@ class EnergyDesktop:
             self.run_button.configure(state="disabled")
             self.refresh_button.configure(state="disabled")
             self.load_button.configure(state="disabled")
+            self.compare_button.configure(state="disabled")
+            self.export_run_button.configure(state="disabled")
+            self.export_comparison_button.configure(state="disabled")
             self.save_root_button.configure(state="disabled")
             self.cancel_button.configure(state="disabled")
             self.status.set("正在关闭并清理 / Closing and cleaning up…")
@@ -728,8 +846,11 @@ class EnergyDesktop:
         self._history_entries = {entry.name: entry for entry in entries}
         labels = tuple(self._history_label(entry) for entry in entries)
         self.history_combo.configure(values=labels)
+        self.compare_a_combo.configure(values=labels)
+        self.compare_b_combo.configure(values=labels)
         self.selected_run.set("")
         self.load_button.configure(state="disabled")
+        self._clear_history_comparison()
         counts = {status: sum(entry.status == status for entry in entries)
                   for status in ("VALID", "INCOMPLETE", "DAMAGED")}
         self.status.set("运行历史 / Runs: " + ", ".join(
@@ -741,10 +862,144 @@ class EnergyDesktop:
     def _select_history(self, _event=None):
         selected = self.selected_run.get()
         name = selected.split(" [", 1)[0] if " [" in selected else ""
+        entry = self._history_entries.get(name)
         available = (not self._closing and self._active_kind is None and
                      self.imported is not None and self.imported.report.ready and
                      name in self._history_entries)
         self.load_button.configure(state="normal" if available else "disabled")
+        export_available = available and entry is not None and entry.status == "VALID"
+        self.export_run_button.configure(
+            state="normal" if export_available else "disabled")
+
+    @staticmethod
+    def _selected_history_name(value):
+        return value.split(" [", 1)[0] if " [" in value else ""
+
+    def _comparison_selection_changed(self, _event=None):
+        self._clear_history_comparison(clear_selection=False)
+        self._select_comparison()
+
+    def _select_comparison(self, _event=None):
+        name_a = self._selected_history_name(self.selected_compare_a.get())
+        name_b = self._selected_history_name(self.selected_compare_b.get())
+        entry_a = self._history_entries.get(name_a)
+        entry_b = self._history_entries.get(name_b)
+        available = (not self._closing and self._active_kind is None and
+                     self.imported is not None and self.imported.report.ready and
+                     name_a != name_b and entry_a is not None and entry_b is not None and
+                     entry_a.status == "VALID" and entry_b.status == "VALID")
+        self.compare_button.configure(state="normal" if available else "disabled")
+        export_available = (available and self.history_comparison is not None and
+                            self.history_comparison.run_a.name == name_a and
+                            self.history_comparison.run_b.name == name_b)
+        self.export_comparison_button.configure(
+            state="normal" if export_available else "disabled")
+
+    def _compare_history(self):
+        if self._closing or self._active_kind is not None:
+            return
+        name_a = self._selected_history_name(self.selected_compare_a.get())
+        name_b = self._selected_history_name(self.selected_compare_b.get())
+        if self.imported is None or not self.imported.report.ready or \
+                name_a == name_b or name_a not in self._history_entries or \
+                name_b not in self._history_entries:
+            self.status.set("请选择两个不同的有效运行 / Select two distinct valid runs")
+            return
+        imported = self.imported
+        runs_root = Path(self.runs_root.get())
+        self._clear_history_comparison(clear_selection=False)
+        self.status.set("正在核验公平比较条件 / Verifying fair-comparison context…")
+        self._start_job("history_compare", lambda cancel: compare_verified_runs(
+            imported, name_a, name_b, runs_root, cancel_event=cancel))
+
+    @staticmethod
+    def _comparison_policy(run):
+        if run.optimization_mode == "peak_cap" and run.peak_cap_kw is not None:
+            return f"峰值上限 {run.peak_cap_kw:g} kW / Peak cap"
+        return "纯电费 / Cost-only"
+
+    def _show_history_comparison(self, comparison):
+        self.history_comparison = comparison
+        labels = {
+            "cost_cny": "购电费用 / Cost",
+            "grid_energy_kwh": "购电量 / Grid energy",
+            "peak_grid_kw": "购电峰值 / Grid peak",
+        }
+        for key, label in labels.items():
+            unit = comparison.units[key]
+            value_a = getattr(comparison.run_a.metrics, key)
+            value_b = getattr(comparison.run_b.metrics, key)
+            delta = getattr(comparison.delta_b_minus_a, key)
+            self.comparison_table.item(
+                key, values=(label, f"{value_a:,.2f} {unit}",
+                             f"{value_b:,.2f} {unit}", f"{delta:+,.2f} {unit}"))
+        self.comparison_status.set(
+            f"完整性 / Integrity: {comparison.integrity_status}  |  "
+            f"公平条件 / Fairness: {comparison.fairness_status}  |  "
+            "B − A；正负值仅描述对应指标变化 / signs describe each metric only")
+        devices = comparison.run_a.device_parameters
+        self.comparison_context.set(
+            f"A: {self._comparison_policy(comparison.run_a)}  |  "
+            f"B: {self._comparison_policy(comparison.run_b)}  |  "
+            f"电网 / Grid {devices.grid_max_kw:g} kW; 电池 / Battery "
+            f"{devices.capacity_kwh:g} kWh; 充/放 / Charge-discharge "
+            f"{devices.max_charge_kw:g}/{devices.max_discharge_kw:g} kW; "
+            f"初末 / Initial-terminal {devices.initial_kwh:g}/{devices.terminal_kwh:g} kWh; "
+            f"效率 / Efficiency {devices.charge_efficiency:g}/{devices.discharge_efficiency:g}")
+        self.status.set("历史运行公平对比通过 / Fair historical comparison verified")
+        self._select_comparison()
+
+    @staticmethod
+    def _report_target(title, initialfile):
+        selected = filedialog.asksaveasfilename(
+            title=title, defaultextension=".html",
+            filetypes=[("HTML report", "*.html")], initialfile=initialfile,
+            confirmoverwrite=False)
+        return Path(selected) if selected else None
+
+    def _export_selected_run(self):
+        if self._closing or self._active_kind is not None:
+            return
+        name = self._selected_history_name(self.selected_run.get())
+        entry = self._history_entries.get(name)
+        if self.imported is None or not self.imported.report.ready or \
+                entry is None or entry.status != "VALID":
+            self.status.set("请选择有效运行 / Select a valid run")
+            return
+        target = self._report_target(
+            "导出单次运行报告 / Export single-run report", f"gridwise-{name}.html")
+        if target is None:
+            return
+        imported = self.imported
+        runs_root = Path(self.runs_root.get())
+        self.status.set("正在重新校验并导出报告 / Revalidating and exporting report…")
+        self._start_job("report_single", lambda cancel: export_single_run_report(
+            target, imported, name, runs_root, cancel_event=cancel))
+
+    def _export_history_comparison(self):
+        if self._closing or self._active_kind is not None or self.history_comparison is None:
+            return
+        name_a = self._selected_history_name(self.selected_compare_a.get())
+        name_b = self._selected_history_name(self.selected_compare_b.get())
+        if self.imported is None or not self.imported.report.ready or \
+                self.history_comparison.run_a.name != name_a or \
+                self.history_comparison.run_b.name != name_b:
+            self.status.set("请先完成当前 A/B 公平对比 / Complete the current A/B comparison")
+            return
+        target = self._report_target(
+            "导出 A/B 对比报告 / Export A/B report",
+            f"gridwise-{name_a}-vs-{name_b}.html")
+        if target is None:
+            return
+        imported = self.imported
+        runs_root = Path(self.runs_root.get())
+        self.status.set("正在重新校验并导出 A/B 报告 / Revalidating and exporting A/B report…")
+        self._start_job("report_compare", lambda cancel: export_comparison_report(
+            target, imported, name_a, name_b, runs_root, cancel_event=cancel))
+
+    def _show_report_export(self, path):
+        self.status.set(f"报告已导出 / Report exported: {path}")
+        self._append_log(f"Report exported: {path}")
 
     def _load_history(self):
         if self._closing or self._active_kind is not None:
@@ -757,6 +1012,7 @@ class EnergyDesktop:
         imported = self.imported
         runs_root = Path(self.runs_root.get())
         self._clear_results()
+        self._clear_history_comparison()
         self.run_button.configure(state="disabled")
         self.status.set("正在重新校验运行 / Revalidating selected run…")
         self._start_job("history_load", lambda cancel: load_verified_comparison(
@@ -872,6 +1128,9 @@ class EnergyDesktop:
                 result.optimization_mode, result.peak_cap_kw)
             self.history_combo.configure(values=tuple(
                 self._history_label(entry) for entry in self._history_entries.values()))
+            labels = tuple(self._history_label(entry) for entry in self._history_entries.values())
+            self.compare_a_combo.configure(values=labels)
+            self.compare_b_combo.configure(values=labels)
             self.selected_run.set(self._history_label(self._history_entries[result.run_name]))
         for key, pair in self.metric_labels.items():
             optimized = self.chart["metrics"]["optimized"][key]

@@ -65,3 +65,15 @@ Tk 主线程持有模式单选项、上限输入和结果策略栏；后台调�
 新增标准库模块 `device.py`，将电网功率、容量、初末 kWh、充放电功率和效率作为冻结结构集中校验。默认结构从合成模板解析；GUI 文本经同一公共解析器转成结构后传给 `dashboard.build_scenario`，从而真正进入既有 `core.parse_scenario` 和 Pyomo 约束。模型、CLI、审计器及产物格式均未改。/ A small standard-library module validates the existing equipment constants. The GUI passes that object through scenario construction into the unchanged model constraints.
 
 完整链路为 `CSV ImportResult + DeviceParameters → build_scenario → publish_run → audit_exports.py → read_verified_run → DeviceParameters.from_scenario + 图表`。设备变化只使结果和所选历史失效，不丢弃已经通过的 CSV 质量报告。选择历史运行时，从安全读取返回的 `scenario.json` 恢复该运行实际参数；同输入成本参考仍要求完整场景 SHA-256 相同，因此不同设备参数不会被错误比较。/ Equipment edits invalidate stale outputs while preserving CSV quality. Historical values are restored from verified scenario bytes, and cost-reference matching remains bound to the full scenario digest.
+
+## v0.3.15 历史运行公平对比 / Fair historical-run comparison
+
+`dashboard.compare_verified_runs` 对 A、B 两个运行分别调用 `read_verified_run`，再把已校验 `summary.json` 字节交给 `prepare_visualization_data` 与当前 `ImportResult` 逐时对齐并重算三项指标。只有场景 SHA-256、求解器、模型源码 SHA-256、设备参数及无储能基线指标一致时，才返回不可变的 `HistoricalRunComparison`；模式和峰值上限可不同。任一校验失败均不返回部分结果。Tk 后台任务只产生比较对象，主线程显示指标表；输入、时间步、设备参数或运行根目录改变时通过代次隔离清空旧比较并拒收迟到结果。模型、运行产物格式和审计器未改。/ Each side is safely reread and independently aligned to the current checked CSV before the controller returns one complete comparison. The UI keeps integrity, fairness and signed metric changes separate, and stale worker results cannot repopulate invalidated state.
+
+## v0.3.16 HTML 报告导出 / HTML report export
+
+`reports.py` 位于已验证控制层与文件系统之间。单次路径为 `ImportResult + run name → load_verified_comparison → DashboardResult → HTML bytes`；A/B 路径为 `ImportResult + A/B names → compare_verified_runs → HistoricalRunComparison → HTML bytes`。它只格式化控制层已经重算并验证的指标、策略和设备参数，不导入求解器，也不复制电费、购电量或峰值公式。 / The report layer formats verified controller objects; it neither invokes the solver directly nor reimplements metric calculations.
+
+完整 UTF-8 HTML 先在内存中生成并转义动态文本，再写入目标目录的私有临时文件、刷新并 `fsync`，最后以 `os.replace` 发布。默认拒绝已有目标，目录、符号链接、junction、非 `.html` 或相对路径均拒绝。生成或发布失败时不产生成功目标；临时清理失败会同时报告原始异常、清理异常和残留绝对路径。单文件替换不构成对恶意本机写入者或断电的持久性保证。 / Rendering precedes same-directory staged publication. Failure is closed and cleanup failures retain the original cause and residual path; this is not a power-loss or hostile-local-writer guarantee.
+
+桌面按钮复用现有后台任务、取消事件和 generation 隔离；文件对话框在主线程打开，安全读取、比较和写入在工作线程完成，最终状态只由主线程更新。输入、步长、设备、运行根目录或 A/B 选择变化时，相应导出资格立即失效。 / Export uses the existing worker and generation boundary, while all Tk mutations stay on the main thread.
