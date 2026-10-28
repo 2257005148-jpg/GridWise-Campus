@@ -22,8 +22,9 @@ from gridwise.dashboard import (ComparedRun, ComparisonMetrics, DashboardError,
                                 DashboardResult, HistoricalRunComparison,
                                 RunHistoryEntry)
 from gridwise.device import DeviceParameters
-from gridwise.diagnostics import (FailureCategory, FailureStage,
+from gridwise.diagnostics import (FailureCategory, FailureStage, RunDiagnostic,
                                   diagnose_failure)
+from gridwise.run_artifacts import RunArtifactError
 
 
 _interpreter = None
@@ -1175,6 +1176,190 @@ def test_run_failure_shows_diagnostic_without_leaving_old_results(monkeypatch):
         assert app.export_run_button.instate(["disabled"])
         assert "UNKNOWN" in log
         assert "synthetic backend failure" in log
+        assert app.current_diagnostic is diagnostic
+        assert "UNKNOWN" in app.diagnostic_category.get()
+        assert "证据不足" in app.diagnostic_summary.get()
+        assert app.diagnostic_details_button.instate(["!disabled"])
+        assert app.copy_diagnostic_button.instate(["!disabled"])
+    finally:
+        close_desktop(root, app)
+
+
+@pytest.mark.parametrize(("category", "chinese"), [
+    (FailureCategory.INPUT_INVALID, "输入无效"),
+    (FailureCategory.INFEASIBLE, "模型不可行"),
+    (FailureCategory.SOLVER_UNAVAILABLE, "求解器不可用"),
+    (FailureCategory.SOLVER_TIMEOUT, "求解超时"),
+    (FailureCategory.SOLVER_ERROR, "求解失败"),
+    (FailureCategory.CANCELLED, "任务取消"),
+    (FailureCategory.AUDIT_FAILED, "审计失败"),
+    (FailureCategory.ARTIFACT_INVALID, "产物无效"),
+    (FailureCategory.UNKNOWN, "未知原因"),
+])
+def test_diagnostic_panel_maps_every_category(category, chinese):
+    root, app = new_desktop()
+    error = RuntimeError(f"synthetic {category.value}")
+    diagnostic = RunDiagnostic(
+        category, FailureStage.CONTROL, f"summary {category.value}",
+        ("evidence=present",), ("人工检查 / Check manually",),
+        (f"RuntimeError: synthetic {category.value}",), error)
+    try:
+        app._show_diagnostic(diagnostic)
+
+        assert category.value in app.diagnostic_category.get()
+        assert chinese in app.diagnostic_category.get()
+        assert "control" in app.diagnostic_stage.get()
+        assert f"summary {category.value}" in app.diagnostic_summary.get()
+        if category is FailureCategory.UNKNOWN:
+            assert "证据不足，无法确定根因" in app.diagnostic_summary.get()
+    finally:
+        close_desktop(root, app)
+
+
+def test_diagnostic_details_preserve_solver_evidence_exception_chain_and_copy(monkeypatch):
+    root, app = new_desktop()
+    underlying = ValueError("synthetic input origin")
+    error = RunArtifactError(
+        "command exited 2", stage="solve", reason="command_failed", returncode=2,
+        stderr="gridwise: no optimal solution: error, infeasible\n")
+    error.__cause__ = underlying
+    diagnostic = diagnose_failure(error)
+    try:
+        app._show_diagnostic(diagnostic)
+        app._toggle_diagnostic_details()
+        details = app.diagnostic_details.get("1.0", "end")
+
+        assert diagnostic.category is FailureCategory.INFEASIBLE
+        assert "solver_status=error" in app.diagnostic_evidence.get()
+        assert "termination_condition=infeasible" in app.diagnostic_evidence.get()
+        assert "termination_condition=infeasible" in details
+        assert "solver_status=error" in details
+        assert "RunArtifactError: command exited 2" in details
+        assert "ValueError: synthetic input origin" in details
+        assert "人工检查建议 / Suggested checks" in details
+        assert app.diagnostic_details.winfo_manager() == "pack"
+
+        app._copy_diagnostic_details()
+        assert root.clipboard_get() == details.rstrip("\n")
+        assert app.current_diagnostic is diagnostic
+
+        def clipboard_denied():
+            raise tk.TclError("synthetic clipboard denial")
+
+        monkeypatch.setattr(root, "clipboard_clear", clipboard_denied)
+        app._copy_diagnostic_details()
+        assert app.current_diagnostic is diagnostic
+        assert "复制诊断失败" in app.status.get() or "Copy diagnosis failed" in app.status.get()
+        assert "synthetic clipboard denial" in app.quality.get("1.0", "end")
+    finally:
+        close_desktop(root, app)
+
+
+def test_diagnostic_clears_when_input_policy_device_or_root_changes():
+    root, app = new_desktop()
+    diagnostic = diagnose_failure(RuntimeError("synthetic diagnostic"))
+
+    def show_then_change(change):
+        app._show_diagnostic(diagnostic)
+        assert app.current_diagnostic is diagnostic
+        change()
+        root.update()
+        assert app.current_diagnostic is None
+        assert app.diagnostic_details_button.instate(["disabled"])
+
+    try:
+        show_then_change(lambda: app.path.set(app.path.get() + ".changed"))
+        show_then_change(lambda: app.step.set("0.5"))
+        show_then_change(lambda: app.device_values["capacity_kwh"].set("61"))
+        show_then_change(lambda: app.optimization_mode.set("peak_cap"))
+        show_then_change(lambda: app.peak_cap.set("54"))
+        show_then_change(lambda: app.runs_root.set(app.runs_root.get() + "-changed"))
+    finally:
+        close_desktop(root, app)
+
+
+def test_new_job_and_success_clear_diagnostic(monkeypatch):
+    root, app = new_desktop()
+    diagnostic = diagnose_failure(RuntimeError("old failure"))
+    result = DashboardResult(
+        {"timestamps": ["2026-01-01T00:00:00+00:00"],
+         "series": {key: [0.0] for _, definitions, _ in desktop.CHARTS
+                    for key, _, _ in definitions},
+         "metrics": {
+             "optimized": {"cost_cny": 1.0, "grid_energy_kwh": 2.0,
+                           "peak_grid_kw": 3.0},
+             "baseline": {"cost_cny": 2.0, "grid_energy_kwh": 3.0,
+                          "peak_grid_kw": 4.0}}},
+        "AUDIT PASSED · VERIFIED")
+    monkeypatch.setattr(desktop, "run_comparison", lambda *_args, **_kwargs: result)
+    try:
+        app._show_diagnostic(diagnostic)
+        app._run()
+        assert app.current_diagnostic is None
+        pump(root, lambda: app._active_kind is None)
+        assert app.current_diagnostic is None
+        assert app.chart is not None
+        assert app.diagnostic_details_button.instate(["disabled"])
+    finally:
+        close_desktop(root, app)
+
+
+def test_cancel_and_late_failure_do_not_create_or_restore_diagnostic(monkeypatch, tmp_path):
+    root, app = new_desktop()
+    started = threading.Event()
+    release = threading.Event()
+
+    def delayed_failure(_imported, **kwargs):
+        started.set()
+        release.wait(2)
+        if kwargs["cancel_event"].is_set():
+            raise DashboardError("run cancelled")
+        raise DashboardError("late synthetic failure")
+
+    monkeypatch.setattr(desktop, "run_comparison", delayed_failure)
+    try:
+        app._run()
+        pump(root, started.is_set)
+        app._cancel_job()
+        release.set()
+        pump(root, lambda: app._active_kind is None)
+        assert app.current_diagnostic is None
+        assert "取消" in app.status.get() or "Cancelled" in app.status.get()
+
+        release.clear()
+        started.clear()
+        app._run()
+        pump(root, started.is_set)
+        app.path.set(str(tmp_path / "new-input.csv"))
+        release.set()
+        pump(root, lambda: not app._pending_jobs)
+        assert app.current_diagnostic is None
+        assert "late synthetic failure" not in app.diagnostic_summary.get()
+    finally:
+        release.set()
+        close_desktop(root, app)
+
+
+def test_diagnostic_details_are_keyboard_focusable_scrollable_and_do_not_change_devices():
+    root, app = new_desktop()
+    values_before = {name: value.get() for name, value in app.device_values.items()}
+    diagnostic = RunDiagnostic(
+        FailureCategory.UNKNOWN, FailureStage.UNKNOWN, "synthetic unknown",
+        tuple(f"evidence-{index:02d}" for index in range(30)),
+        ("保留日志 / Keep logs",),
+        ("RuntimeError: synthetic unknown",), RuntimeError("synthetic unknown"))
+    try:
+        root.deiconify()
+        app._show_diagnostic(diagnostic)
+        app._toggle_diagnostic_details()
+        app.diagnostic_details.focus_set()
+        root.update()
+        assert root.focus_get() == app.diagnostic_details
+        app.diagnostic_details.mark_set("insert", "1.0")
+        app.diagnostic_details.event_generate("<Control-End>")
+        root.update()
+        assert app.diagnostic_details.index("insert") != "1.0"
+        assert values_before == {name: value.get() for name, value in app.device_values.items()}
     finally:
         close_desktop(root, app)
 

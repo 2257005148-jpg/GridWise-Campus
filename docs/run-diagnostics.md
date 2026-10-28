@@ -36,6 +36,12 @@ Current HiGHS behavior for the synthetic infeasible probe is `solver_status=erro
 
 输入、时间步、设备参数、策略或运行目录变化仍通过 generation 丢弃旧任务结果。失败会清除图表、指标、当前运行选择和单次报告导出资格，但不会删除历史运行目录。/ Existing generation isolation remains authoritative. Failures clear current presentation and export eligibility without deleting historical runs.
 
+## v0.3.18 桌面诊断面板 / Desktop diagnosis panel
+
+桌面复用同一个 `RunDiagnostic`，不重新分类错误。紧凑摘要显示类别、双语说明、执行阶段、可用的求解器/终止状态证据和人工检查建议；按“显示详情 / Show details”可展开一个可聚焦、可选择、可滚动的只读文本区，包含全部原始证据、安全格式化的异常链和完整建议。“复制详情 / Copy details”复制同一文本；剪贴板失败会写入既有日志并保留当前诊断。/ The desktop formats the existing immutable diagnosis rather than reclassifying errors. Its compact view includes trusted solver evidence when available; the expandable read-only view exposes the full evidence and cause chain, and a clipboard failure never discards the diagnosis.
+
+`UNKNOWN` 摘要固定补充“证据不足，无法确定根因”。新任务开始、成功结束，或 CSV、步长、设备参数、优化模式、峰值上限、运行根目录变化时，旧诊断清除。用户取消只显示取消状态，不创建虚假的求解失败诊断；generation 不匹配的迟到结果仍被丢弃。原始错误继续写入原日志。/ Unknown diagnoses state the evidence limit explicitly. Context changes and new or successful jobs clear stale diagnoses, while cancellation and stale generations cannot repopulate a false failure.
+
 ## 明确边界 / Explicit limitations
 
 - 字符串中偶然出现 “infeasible” 不足以分类；必须有可信阶段和严格终止格式。

@@ -73,4 +73,6 @@ v0.3.16 报告测试先用真实纯电费与 55 kW 运行验证单次和 A/B HTM
 
 v0.3.17 诊断测试要求严格的阶段与终止证据：真实 `error/infeasible` 归类 `INFEASIBLE`，仅在任意文本中出现 infeasible 必须保持 `UNKNOWN`。求解器不可用、求解异常、求解阶段超时、取消、审计失败和产物损坏分别测试；异常格式化失败不得覆盖原错误，诊断与建议不得修改设备参数。桌面测试覆盖运行中取消、完成并入队后的迟到取消、成功显示后的无操作取消、失败清除图表/指标/单次报告资格及 generation 隔离。运行产物回归确认阶段字段只存在异常对象，格式与安全读取不变。/ Diagnostic tests require trusted stage and termination evidence and preserve `UNKNOWN` for ambiguity. Desktop tests cover all three cancellation timing states and fail-closed presentation.
 
+v0.3.18 桌面回归应覆盖九类诊断的双语摘要映射、不可行状态证据、`UNKNOWN` 证据不足说明、原异常及异常链、详情复制和剪贴板失败。CSV、步长、设备、模式、峰值上限、运行根目录、新任务及成功结果必须清除旧诊断；取消与迟到 generation 不得产生或恢复诊断。详情文本须可聚焦、选择和滚动，显示及复制不得修改设备参数，原日志、历史、A/B、报告导出和关闭流程继续回归。/ Desktop regressions cover every diagnosis presentation, copy failure, context invalidation, cancellation and stale delivery. The read-only detail remains keyboard accessible and display operations never mutate parameters.
+
 验收顺序为：v0.3.15 缺陷红绿证据 → `tests/test_reports.py` → 桌面定向测试 → dashboard/data/artifact/peak-cap/device 回归 → 完整 `pytest` → 仓库外真实报告生成及浏览器视觉检查 → `git diff --check`、敏感模式扫描和历史报告哈希。Windows 无符号链接权限时该用例单独计为 skipped，不计通过；非交互宿主中的历史 Tk 焦点异常必须保留证据，不用重复成功覆盖。/ Acceptance preserves red/green and focus-runtime evidence, and treats a privilege-based symlink skip separately from passes.

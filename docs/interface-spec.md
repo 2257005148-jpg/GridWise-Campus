@@ -52,4 +52,6 @@ v0.3.16 增加标准库报告接口：`build_single_run_html(imported, run_name,
 
 v0.3.17 增加 `diagnostics.diagnose_failure(error, *, stage_hint=UNKNOWN)`，返回冻结的 `RunDiagnostic`。分类只使用明确阶段、结构化 `RunArtifactError` 原因和严格的可信 CLI 终止格式；证据不足返回 `UNKNOWN`。`RunArtifactError` 的 `stage`、`reason`、退出码及 stdout/stderr 是进程内诊断字段，不改变运行产物格式。`DashboardError.diagnostic` 可携带诊断，原消息和异常链保持兼容。/ Diagnostics are immutable and conservative. In-memory stage metadata does not change the CLI, manifest, summary or independent-audit contracts.
 
+v0.3.18 桌面把同一 `RunDiagnostic` 映射为双语摘要及只读详情，不增加新的分类入口。详情包含类别、阶段、摘要、可用 solver status/termination、证据、异常链和建议，并可复制。剪贴板失败保留诊断并写日志。输入上下文变化、新任务开始或成功结果会清除旧诊断；用户取消及旧 generation 结果不会生成或恢复虚假失败。/ The desktop diagnosis panel is a presentation adapter over the existing object. It is cleared with its input/run context, and neither cancellation nor stale worker delivery may fabricate a failure.
+
 普通桌面任务使用一个完成/取消门闩线性化“结果入队”和用户取消：运行中取消仍设置原事件；结果已经入队但尚未轮询时拒绝迟到取消；结果显示后无活动取消入口。该门闩不改变工作线程、Tk 主线程更新或 generation 隔离模型。/ A small desktop gate prevents a late cancellation from contradicting a result already queued for the main thread, without replacing the existing worker architecture.

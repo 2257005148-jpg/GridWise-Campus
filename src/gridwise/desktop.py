@@ -23,7 +23,8 @@ from .dashboard import (DashboardError, MAX_INTERACTIVE_PERIODS, ROOT,
 from .data import import_energy_csv, summarize_energy_input
 from .device import (DEVICE_FIELDS, DeviceParameterError, DeviceParameters,
                      parse_device_parameters)
-from .diagnostics import FailureStage, diagnose_failure
+from .diagnostics import (FailureCategory, FailureStage, RunDiagnostic,
+                          diagnose_failure)
 from .reports import (ReportCancellation, export_comparison_report,
                       export_single_run_report)
 from .run_storage import (RunStorageError, default_config_path, load_saved_runs_root,
@@ -71,6 +72,54 @@ CHARTS = (
                                         ("baseline_cumulative_cost_cny", "基线 / Baseline", MUTED)), "CNY"),
     ("储能状态 / Battery SOC", (("optimized_soc_kwh", "SOC", BLUE),), "kWh"),
 )
+
+DIAGNOSTIC_CATEGORY_LABELS = {
+    FailureCategory.INPUT_INVALID: "输入无效 / Input invalid",
+    FailureCategory.INFEASIBLE: "模型不可行 / Model infeasible",
+    FailureCategory.SOLVER_UNAVAILABLE: "求解器不可用 / Solver unavailable",
+    FailureCategory.SOLVER_TIMEOUT: "求解超时 / Solver timeout",
+    FailureCategory.SOLVER_ERROR: "求解失败 / Solver error",
+    FailureCategory.CANCELLED: "任务取消 / Cancelled",
+    FailureCategory.AUDIT_FAILED: "审计失败 / Audit failed",
+    FailureCategory.ARTIFACT_INVALID: "产物无效 / Artifact invalid",
+    FailureCategory.UNKNOWN: "未知原因 / Unknown cause",
+}
+
+DIAGNOSTIC_STAGE_LABELS = {
+    FailureStage.INPUT: "输入 / input",
+    FailureStage.SOLVE: "求解 / solve",
+    FailureStage.AUDIT: "审计 / audit",
+    FailureStage.ARTIFACT: "产物 / artifact",
+    FailureStage.CONTROL: "控制 / control",
+    FailureStage.UNKNOWN: "未知 / unknown",
+}
+
+
+def diagnostic_details_text(diagnostic: RunDiagnostic) -> str:
+    """Format one existing diagnosis for display without reclassifying it."""
+    lines = [
+        "GridWise Campus 运行诊断 / Run diagnosis",
+        f"类别 / Category: {diagnostic.category.value} — "
+        f"{DIAGNOSTIC_CATEGORY_LABELS[diagnostic.category]}",
+        f"阶段 / Stage: {DIAGNOSTIC_STAGE_LABELS[diagnostic.stage]}",
+        f"摘要 / Summary: {diagnostic.summary}",
+    ]
+    if diagnostic.category is FailureCategory.UNKNOWN:
+        lines.append(
+            "说明 / Note: 证据不足，无法确定根因 / "
+            "Insufficient evidence to determine the root cause")
+    if diagnostic.solver_status is not None:
+        lines.append(f"求解器状态 / Solver status: {diagnostic.solver_status}")
+    if diagnostic.termination_condition is not None:
+        lines.append(
+            f"终止状态 / Termination condition: {diagnostic.termination_condition}")
+    lines.extend(("", "原始证据 / Evidence"))
+    lines.extend(f"- {item}" for item in diagnostic.evidence)
+    lines.extend(("", "原始异常与异常链 / Original error and cause chain"))
+    lines.extend(f"- {item}" for item in diagnostic.cause_chain)
+    lines.extend(("", "人工检查建议 / Suggested checks"))
+    lines.extend(f"- {item}" for item in diagnostic.suggestions)
+    return "\n".join(lines)
 
 
 def chart_values(chart: dict, specification: tuple) -> tuple:
@@ -152,6 +201,17 @@ class EnergyDesktop:
         self._history_entries = {}
         self.history_comparison = None
         self.status = tk.StringVar(value="请选择 CSV 并检查质量 / Select a CSV and check quality")
+        self.current_diagnostic = None
+        self.diagnostic_category = tk.StringVar(
+            value="无活动诊断 / No active diagnosis")
+        self.diagnostic_stage = tk.StringVar(value="阶段 / Stage: —")
+        self.diagnostic_summary = tk.StringVar(
+            value="当前没有运行失败 / No current run failure")
+        self.diagnostic_evidence = tk.StringVar(value="证据 / Evidence: —")
+        self.diagnostic_suggestions = tk.StringVar(
+            value="诊断只显示证据，不会自动修改参数 / Diagnostics never change parameters")
+        self._diagnostic_text_value = ""
+        self._diagnostic_expanded = False
         self.imported = None
         self.input_summary = None
         self.chart = None
@@ -319,6 +379,46 @@ class EnergyDesktop:
         self.status_label.bind("<Configure>", lambda event: self.status_label.configure(
             wraplength=max(80, event.width - 12)))
         self.progress = ttk.Progressbar(outer, mode="indeterminate")
+
+        diagnostic = ttk.LabelFrame(
+            outer, text="运行诊断 / Run diagnosis", padding=(12, 8))
+        diagnostic.pack(fill="x", pady=(8, 4))
+        diagnostic_header = ttk.Frame(diagnostic)
+        diagnostic_header.pack(fill="x")
+        ttk.Label(diagnostic_header, textvariable=self.diagnostic_category).pack(
+            side="left", anchor="w")
+        ttk.Label(diagnostic_header, textvariable=self.diagnostic_stage,
+                  style="Sub.TLabel").pack(side="left", padx=(16, 0), anchor="w")
+        self.copy_diagnostic_button = ttk.Button(
+            diagnostic_header, text="复制详情 / Copy details",
+            command=self._copy_diagnostic_details, state="disabled")
+        self.copy_diagnostic_button.pack(side="right")
+        self.diagnostic_details_button = ttk.Button(
+            diagnostic_header, text="显示详情 / Show details",
+            command=self._toggle_diagnostic_details, state="disabled")
+        self.diagnostic_details_button.pack(side="right", padx=(0, 8))
+        self.diagnostic_summary_label = ttk.Label(
+            diagnostic, textvariable=self.diagnostic_summary, wraplength=960)
+        self.diagnostic_summary_label.pack(anchor="w", fill="x", pady=(6, 0))
+        self.diagnostic_evidence_label = ttk.Label(
+            diagnostic, textvariable=self.diagnostic_evidence,
+            style="Sub.TLabel", wraplength=960)
+        self.diagnostic_evidence_label.pack(anchor="w", fill="x", pady=(3, 0))
+        self.diagnostic_suggestions_label = ttk.Label(
+            diagnostic, textvariable=self.diagnostic_suggestions,
+            style="Sub.TLabel", wraplength=960)
+        self.diagnostic_suggestions_label.pack(anchor="w", fill="x", pady=(3, 0))
+        self.diagnostic_details_frame = ttk.Frame(diagnostic)
+        self.diagnostic_details = tk.Text(
+            self.diagnostic_details_frame, height=8, wrap="word", bg=WHITE, fg=INK,
+            relief="flat", padx=10, pady=8, takefocus=1)
+        self.diagnostic_details.pack(side="left", fill="both", expand=True)
+        diagnostic_scroll = ttk.Scrollbar(
+            self.diagnostic_details_frame, orient="vertical",
+            command=self.diagnostic_details.yview)
+        diagnostic_scroll.pack(side="right", fill="y")
+        self.diagnostic_details.configure(
+            yscrollcommand=diagnostic_scroll.set, state="disabled")
 
         history = ttk.Frame(outer)
         history.pack(fill="x", pady=(8, 12))
@@ -521,6 +621,84 @@ class EnergyDesktop:
         self.quality.see("end")
         self.quality.configure(state="disabled")
 
+    def _diagnostic_text(self, message):
+        self.diagnostic_details.configure(state="normal")
+        self.diagnostic_details.delete("1.0", "end")
+        self.diagnostic_details.insert("1.0", message)
+        self.diagnostic_details.configure(state="disabled")
+
+    def _clear_diagnostic(self):
+        self.current_diagnostic = None
+        self._diagnostic_text_value = ""
+        self.diagnostic_category.set("无活动诊断 / No active diagnosis")
+        self.diagnostic_stage.set("阶段 / Stage: —")
+        self.diagnostic_summary.set("当前没有运行失败 / No current run failure")
+        self.diagnostic_evidence.set("证据 / Evidence: —")
+        self.diagnostic_suggestions.set(
+            "诊断只显示证据，不会自动修改参数 / Diagnostics never change parameters")
+        self._diagnostic_text("")
+        self.diagnostic_details_button.configure(
+            text="显示详情 / Show details", state="disabled")
+        self.copy_diagnostic_button.configure(state="disabled")
+        if self._diagnostic_expanded:
+            self.diagnostic_details_frame.pack_forget()
+            self._diagnostic_expanded = False
+
+    def _show_diagnostic(self, diagnostic: RunDiagnostic):
+        self.current_diagnostic = diagnostic
+        self.diagnostic_category.set(
+            f"{diagnostic.category.value} — "
+            f"{DIAGNOSTIC_CATEGORY_LABELS[diagnostic.category]}")
+        self.diagnostic_stage.set(
+            f"阶段 / Stage: {DIAGNOSTIC_STAGE_LABELS[diagnostic.stage]}")
+        summary = diagnostic.summary
+        if diagnostic.category is FailureCategory.UNKNOWN:
+            summary += ("；证据不足，无法确定根因 / "
+                        "Insufficient evidence to determine the root cause")
+        self.diagnostic_summary.set(summary)
+        compact_evidence = []
+        if diagnostic.solver_status is not None:
+            compact_evidence.append(f"solver_status={diagnostic.solver_status}")
+        if diagnostic.termination_condition is not None:
+            compact_evidence.append(
+                f"termination_condition={diagnostic.termination_condition}")
+        if not compact_evidence:
+            compact_evidence.extend(diagnostic.evidence[:2])
+        self.diagnostic_evidence.set(
+            "证据 / Evidence: " + (" | ".join(compact_evidence) or "—"))
+        self.diagnostic_suggestions.set(
+            "建议 / Suggested checks: " + " | ".join(diagnostic.suggestions))
+        self._diagnostic_text_value = diagnostic_details_text(diagnostic)
+        self._diagnostic_text(self._diagnostic_text_value)
+        self.diagnostic_details_button.configure(state="normal")
+        self.copy_diagnostic_button.configure(state="normal")
+
+    def _toggle_diagnostic_details(self):
+        if self.current_diagnostic is None:
+            return
+        if self._diagnostic_expanded:
+            self.diagnostic_details_frame.pack_forget()
+            self.diagnostic_details_button.configure(text="显示详情 / Show details")
+            self._diagnostic_expanded = False
+        else:
+            self.diagnostic_details_frame.pack(fill="both", expand=True, pady=(8, 0))
+            self.diagnostic_details_button.configure(text="隐藏详情 / Hide details")
+            self._diagnostic_expanded = True
+
+    def _copy_diagnostic_details(self):
+        if self.current_diagnostic is None or not self._diagnostic_text_value:
+            return
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(self._diagnostic_text_value)
+            self.root.update_idletasks()
+        except tk.TclError as exc:
+            self.status.set(
+                "复制诊断失败；诊断仍保留 / Copy diagnosis failed; diagnosis retained")
+            self._append_log(f"TclError copying diagnosis: {exc}")
+            return
+        self.status.set("诊断详情已复制 / Diagnosis details copied")
+
     def _clear_results(self):
         self.chart = None
         self.policy_result.set(
@@ -550,6 +728,7 @@ class EnergyDesktop:
     def _invalidate(self, *_):
         if self._closing:
             return
+        self._clear_diagnostic()
         if self._cancel is not None:
             self._cancel.set()
         self._stop_progress()
@@ -583,6 +762,7 @@ class EnergyDesktop:
     def _policy_changed(self, *_):
         if self._updating_policy or self._closing:
             return
+        self._clear_diagnostic()
         if self._cancel is not None:
             self._cancel.set()
         self._generation += 1
@@ -605,6 +785,7 @@ class EnergyDesktop:
     def _device_changed(self, *_):
         if self._updating_devices or self._closing:
             return
+        self._clear_diagnostic()
         if self._cancel is not None:
             self._cancel.set()
         self._generation += 1
@@ -683,6 +864,7 @@ class EnergyDesktop:
         return self._active_kind == "run" and self._cancel is not None
 
     def _start_job(self, kind, operation):
+        self._clear_diagnostic()
         self._generation += 1
         generation = self._generation
         self._pending_jobs.add(generation)
@@ -819,6 +1001,7 @@ class EnergyDesktop:
     def _append_run_diagnostic(self, error, *, stage_hint=FailureStage.CONTROL):
         diagnostic = getattr(error, "diagnostic", None) or diagnose_failure(
             error, stage_hint=stage_hint)
+        self._show_diagnostic(diagnostic)
         self._append_log(
             f"运行诊断 / Run diagnosis: {diagnostic.category.value}\n"
             f"阶段 / Stage: {diagnostic.stage.value}\n"
@@ -1157,6 +1340,7 @@ class EnergyDesktop:
                     float(result.chart["metrics"][kind][key])
         except (KeyError, TypeError, ValueError) as exc:
             raise DashboardError(f"图表数据无效 / Invalid chart data: {exc}") from exc
+        self._clear_diagnostic()
         self.chart = result.chart
         self.status.set(result.audit_message)
         if result.device_parameters is not None:
