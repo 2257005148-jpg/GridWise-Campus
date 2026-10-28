@@ -22,6 +22,8 @@ from gridwise.dashboard import (ComparedRun, ComparisonMetrics, DashboardError,
                                 DashboardResult, HistoricalRunComparison,
                                 RunHistoryEntry)
 from gridwise.device import DeviceParameters
+from gridwise.diagnostics import (FailureCategory, FailureStage,
+                                  diagnose_failure)
 
 
 _interpreter = None
@@ -134,6 +136,7 @@ def test_invalid_device_parameter_blocks_controller_and_success(monkeypatch):
         assert app._active_kind is None
         assert "设备参数无效" in app.status.get() or "Invalid device" in app.status.get()
         assert "charge_efficiency" in app.quality.get("1.0", "end")
+        assert "INPUT_INVALID" in app.quality.get("1.0", "end")
     finally:
         close_desktop(root, app)
 
@@ -191,6 +194,7 @@ def test_peak_cap_mode_rejects_invalid_input_and_passes_valid_cap(monkeypatch):
             assert calls == []
             assert app.chart is None
             assert "上限" in app.status.get() or "cap" in app.status.get()
+            assert "INPUT_INVALID" in app.quality.get("1.0", "end")
 
         app.peak_cap.set("55")
         app._run()
@@ -1107,6 +1111,70 @@ def test_escape_cancels_run_and_allows_keyboard_retry(monkeypatch):
         pump(root, lambda: app._active_kind is None)
         assert len(calls) == 2
         assert "失败" in app.status.get() or "failed" in app.status.get()
+    finally:
+        close_desktop(root, app)
+
+
+def test_completed_queued_run_rejects_late_cancel_and_displays_success(monkeypatch):
+    root, app = new_desktop()
+    completed = threading.Event()
+    result = DashboardResult(
+        {"timestamps": ["2026-01-01T00:00:00+00:00"],
+         "series": {key: [0.0] for _, definitions, _ in desktop.CHARTS
+                    for key, _, _ in definitions},
+         "metrics": {
+             "optimized": {"cost_cny": 1.0, "grid_energy_kwh": 2.0,
+                           "peak_grid_kw": 3.0},
+             "baseline": {"cost_cny": 2.0, "grid_energy_kwh": 3.0,
+                          "peak_grid_kw": 4.0}}},
+        "AUDIT PASSED · VERIFIED")
+
+    def immediate_success(_imported, **_kwargs):
+        completed.set()
+        return result
+
+    monkeypatch.setattr(desktop, "run_comparison", immediate_success)
+    try:
+        app._run()
+        assert completed.wait(1)
+        deadline = time.monotonic() + 1
+        while app._events.empty() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not app._events.empty()
+
+        app._cancel_job()
+
+        assert not app._cancel_requested
+        assert "already completed" in app.status.get()
+        pump(root, lambda: app._active_kind is None)
+        assert "AUDIT PASSED" in app.status.get()
+        assert app.chart is not None
+        displayed = app.status.get()
+        app._cancel_job()
+        assert app.status.get() == displayed
+    finally:
+        close_desktop(root, app)
+
+
+def test_run_failure_shows_diagnostic_without_leaving_old_results(monkeypatch):
+    root, app = new_desktop()
+    error = RuntimeError("synthetic backend failure")
+    diagnostic = diagnose_failure(error, stage_hint=FailureStage.SOLVE)
+
+    def fail(_imported, **_kwargs):
+        raise DashboardError("comparison unavailable", diagnostic=diagnostic)
+
+    monkeypatch.setattr(desktop, "run_comparison", fail)
+    try:
+        app.chart = {"stale": True}
+        app._run()
+        pump(root, lambda: app._active_kind is None)
+
+        log = app.quality.get("1.0", "end")
+        assert app.chart is None
+        assert app.export_run_button.instate(["disabled"])
+        assert "UNKNOWN" in log
+        assert "synthetic backend failure" in log
     finally:
         close_desktop(root, app)
 

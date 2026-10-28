@@ -23,6 +23,7 @@ from .dashboard import (DashboardError, MAX_INTERACTIVE_PERIODS, ROOT,
 from .data import import_energy_csv, summarize_energy_input
 from .device import (DEVICE_FIELDS, DeviceParameterError, DeviceParameters,
                      parse_device_parameters)
+from .diagnostics import FailureStage, diagnose_failure
 from .reports import (ReportCancellation, export_comparison_report,
                       export_single_run_report)
 from .run_storage import (RunStorageError, default_config_path, load_saved_runs_root,
@@ -85,6 +86,27 @@ def chart_values(chart: dict, specification: tuple) -> tuple:
     return timestamps, selected, unit
 
 
+class _JobControl:
+    """Linearize user cancellation with completion being queued for the UI."""
+
+    def __init__(self, cancel_event):
+        self.cancel_event = cancel_event
+        self._lock = threading.Lock()
+        self._completed = False
+
+    def request_cancel(self) -> bool:
+        with self._lock:
+            if self._completed:
+                return False
+            accepted = self.cancel_event.set()
+            return accepted is not False
+
+    def complete(self, publish) -> None:
+        with self._lock:
+            self._completed = True
+            publish()
+
+
 class EnergyDesktop:
     def __init__(self, root: tk.Tk, *, runs_root: Path | None = None,
                  config_path: Path | None = None):
@@ -137,6 +159,7 @@ class EnergyDesktop:
         self._events = queue.Queue()
         self._generation = 0
         self._cancel = None
+        self._job_control = None
         self._cancel_requested = False
         self._active_kind = None
         self._closed = False
@@ -532,6 +555,7 @@ class EnergyDesktop:
         self._stop_progress()
         self._generation += 1
         self._cancel = None
+        self._job_control = None
         self._cancel_requested = False
         self._active_kind = None
         self.imported = None
@@ -563,6 +587,7 @@ class EnergyDesktop:
             self._cancel.set()
         self._generation += 1
         self._cancel = None
+        self._job_control = None
         self._cancel_requested = False
         self._active_kind = None
         self._stop_progress()
@@ -584,6 +609,7 @@ class EnergyDesktop:
             self._cancel.set()
         self._generation += 1
         self._cancel = None
+        self._job_control = None
         self._cancel_requested = False
         self._active_kind = None
         self._stop_progress()
@@ -662,7 +688,9 @@ class EnergyDesktop:
         self._pending_jobs.add(generation)
         cancel = (ReportCancellation() if kind in ("report_single", "report_compare")
                   else threading.Event())
+        control = _JobControl(cancel)
         self._cancel = cancel
+        self._job_control = control
         self._cancel_requested = False
         self._active_kind = kind
         self._sync_policy_controls()
@@ -681,9 +709,10 @@ class EnergyDesktop:
         def worker():
             try:
                 value = operation(cancel)
-                self._events.put((generation, kind, value, None))
+                item = (generation, kind, value, None)
             except Exception as exc:
-                self._events.put((generation, kind, None, exc))
+                item = (generation, kind, None, exc)
+            control.complete(lambda: self._events.put(item))
 
         threading.Thread(target=worker, daemon=True, name=f"gridwise-{kind}").start()
 
@@ -707,6 +736,7 @@ class EnergyDesktop:
             focus_on_cancel = self.root.focus_get() == self.cancel_button
             self._stop_progress()
             self._cancel = None
+            self._job_control = None
             self._cancel_requested = False
             self._active_kind = None
             self._sync_policy_controls()
@@ -747,13 +777,16 @@ class EnergyDesktop:
         self._poll_id = self.root.after(50, self._poll)
 
     def _cancel_job(self, _event=None):
-        if self._closing or self._cancel is None or self._cancel_requested:
+        if self._closing or self._cancel is None or self._job_control is None or \
+                self._cancel_requested:
             return
-        accepted = self._cancel.set()
+        accepted = self._job_control.request_cancel()
         if accepted is False:
             self.cancel_button.configure(state="disabled")
             self.status.set(
-                "报告已完成最终发布；取消未生效 / Report publication already committed")
+                "报告已完成最终发布；取消未生效 / Report publication already committed"
+                if self._active_kind in ("report_single", "report_compare") else
+                "任务已完成；取消未生效 / Task already completed; cancellation ignored")
             return
         self._cancel_requested = True
         self.cancel_button.configure(state="disabled")
@@ -774,11 +807,24 @@ class EnergyDesktop:
             self._append_log(f"{type(error).__name__}: {error}")
             return
         self._clear_results()
+        self.selected_run.set("")
+        self.export_run_button.configure(state="disabled")
         if kind in ("run", "history_load") and self.imported is not None:
             self.run_button.configure(state="normal")
         self.status.set("运行失败；详见日志 / Run failed; see log" if kind in ("run", "history_load")
                         else "检查失败；详见日志 / Check failed; see log")
         self._append_log(f"{type(error).__name__}: {error}")
+        self._append_run_diagnostic(error)
+
+    def _append_run_diagnostic(self, error, *, stage_hint=FailureStage.CONTROL):
+        diagnostic = getattr(error, "diagnostic", None) or diagnose_failure(
+            error, stage_hint=stage_hint)
+        self._append_log(
+            f"运行诊断 / Run diagnosis: {diagnostic.category.value}\n"
+            f"阶段 / Stage: {diagnostic.stage.value}\n"
+            f"说明 / Summary: {diagnostic.summary}\n"
+            f"证据 / Evidence: {' | '.join(diagnostic.evidence)}\n"
+            f"建议 / Suggested checks: {' | '.join(diagnostic.suggestions)}")
 
     def _on_close(self):
         if self._closing or self._closed:
@@ -1081,6 +1127,7 @@ class EnergyDesktop:
                 self._clear_results()
                 self.status.set("峰值上限无效；详见日志 / Invalid peak cap; see log")
                 self._append_log(f"DashboardError: {exc}")
+                self._append_run_diagnostic(exc, stage_hint=FailureStage.INPUT)
                 return
         try:
             device_parameters = self._device_parameters_value()
@@ -1088,6 +1135,7 @@ class EnergyDesktop:
             self._clear_results()
             self.status.set("设备参数无效；详见日志 / Invalid device parameters; see log")
             self._append_log(f"DashboardError: {exc}")
+            self._append_run_diagnostic(exc, stage_hint=FailureStage.INPUT)
             return
         imported = self.imported
         self._clear_results()

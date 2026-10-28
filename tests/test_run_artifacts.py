@@ -180,8 +180,9 @@ def test_audit_failure_leaves_incomplete_unreadable_run(tmp_path, monkeypatch):
         return original(command, timeout, event)
 
     monkeypatch.setattr(artifacts, "_execute", fail_audit)
-    with pytest.raises(artifacts.RunArtifactError, match="simulated audit failure"):
+    with pytest.raises(artifacts.RunArtifactError, match="simulated audit failure") as caught:
         artifacts.publish_run(SCENARIO, tmp_path)
+    assert caught.value.stage == "audit"
     directory, = tmp_path.iterdir()
     assert not (directory / "COMPLETE").exists()
     with pytest.raises(artifacts.RunArtifactError):
@@ -209,8 +210,10 @@ def test_cancelled_run_never_completes(tmp_path):
     import threading
     event = threading.Event()
     event.set()
-    with pytest.raises(artifacts.RunArtifactError, match="cancelled"):
+    with pytest.raises(artifacts.RunArtifactError, match="cancelled") as caught:
         artifacts.publish_run(SCENARIO, tmp_path, cancel_event=event)
+    assert caught.value.stage == "solve"
+    assert caught.value.reason == "cancelled"
     directory, = tmp_path.iterdir()
     assert not (directory / "COMPLETE").exists()
 
@@ -224,8 +227,10 @@ def test_publish_failure_leaves_incomplete_run(tmp_path, monkeypatch):
         return real_replace(source, target)
 
     monkeypatch.setattr(artifacts.os, "replace", fail_second)
-    with pytest.raises(artifacts.RunArtifactError, match="publication failure"):
+    with pytest.raises(artifacts.RunArtifactError, match="publication failure") as caught:
         artifacts.publish_run(SCENARIO, tmp_path)
+    assert caught.value.stage == "artifact"
+    assert caught.value.reason == "artifact_failure"
     directory, = tmp_path.iterdir()
     assert not (directory / "COMPLETE").exists()
     with pytest.raises(artifacts.RunArtifactError):

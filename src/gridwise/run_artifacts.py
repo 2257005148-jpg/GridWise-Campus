@@ -41,6 +41,15 @@ DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 class RunArtifactError(ValueError):
     """A run cannot be published or safely read under this contract."""
 
+    def __init__(self, message, *, stage=None, reason=None, returncode=None,
+                 stdout=None, stderr=None):
+        super().__init__(message)
+        self.stage = stage
+        self.reason = reason
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
 
 @dataclass(frozen=True)
 class VerifiedRun:
@@ -244,7 +253,7 @@ def read_verified_run(directory: Path) -> VerifiedRun:
 
 def _execute(command: list[str], timeout: float, cancel_event: threading.Event) -> tuple[str, str]:
     if cancel_event.is_set():
-        raise RunArtifactError("run cancelled")
+        raise RunArtifactError("run cancelled", reason="cancelled")
     process = subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, text=True, encoding="utf-8",
                                errors="replace")
@@ -252,15 +261,18 @@ def _execute(command: list[str], timeout: float, cancel_event: threading.Event) 
     try:
         while True:
             if cancel_event.is_set():
-                raise RunArtifactError("run cancelled")
+                raise RunArtifactError("run cancelled", reason="cancelled")
             remaining = timeout - (time.monotonic() - started)
             if remaining <= 0:
-                raise RunArtifactError(f"command timed out after {timeout:g} s")
+                raise RunArtifactError(f"command timed out after {timeout:g} s",
+                                       reason="timeout")
             try:
                 stdout, stderr = process.communicate(timeout=min(0.1, remaining))
                 if process.returncode:
                     raise RunArtifactError(
-                        f"command exited {process.returncode}: {(stderr or stdout).strip()}")
+                        f"command exited {process.returncode}: {(stderr or stdout).strip()}",
+                        reason="command_failed", returncode=process.returncode,
+                        stdout=stdout, stderr=stderr)
                 return stdout, stderr
             except subprocess.TimeoutExpired:
                 continue
@@ -295,6 +307,7 @@ def publish_run(scenario: Path, runs_parent: Path, *,
         raise RunArtifactError(f"cannot reserve new run directory {directory}: {exc}") from exc
     stage = directory / "stage"
     marker_created = False
+    phase = "artifact"
     try:
         stage.mkdir()
         (stage / "scenario.json").write_bytes(source)
@@ -303,16 +316,19 @@ def publish_run(scenario: Path, runs_parent: Path, *,
                    str(stage)]
         if peak_cap_kw is not None:
             command.extend(("--peak-cap-kw", str(peak_cap_kw)))
+        phase = "solve"
         _execute(command, solve_timeout, event)
         before_audit = {name: hashlib.sha256(_read_file(stage / name, MAX_FILE_BYTES)).digest()
                         for name in RUN_FILES}
+        phase = "audit"
         audit, _ = _execute([sys.executable, str(AUDITOR), str(stage / "scenario.json"),
                              str(stage / "optimized.csv"), str(stage / "baseline.csv"),
                              str(stage / "summary.json")], audit_timeout, event)
         if "AUDIT PASSED" not in audit:
             raise RunArtifactError("independent auditor did not report AUDIT PASSED")
         if event.is_set():
-            raise RunArtifactError("run cancelled")
+            raise RunArtifactError("run cancelled", reason="cancelled")
+        phase = "artifact"
         files = {name: _read_file(stage / name, MAX_FILE_BYTES) for name in RUN_FILES}
         if sum(map(len, files.values())) > MAX_TOTAL_BYTES:
             raise RunArtifactError("run files exceed total size limit")
@@ -329,14 +345,14 @@ def publish_run(scenario: Path, runs_parent: Path, *,
         (stage / "manifest.json").write_bytes(manifest_bytes)
         _verify_contents(stage, require_complete=False)
         if event.is_set():
-            raise RunArtifactError("run cancelled")
+            raise RunArtifactError("run cancelled", reason="cancelled")
         for name in RUN_FILES:
             os.replace(stage / name, directory / name)
         os.replace(stage / "manifest.json", directory / "manifest.json")
         stage.rmdir()
         _verify_contents(directory, require_complete=False)
         if event.is_set():
-            raise RunArtifactError("run cancelled")
+            raise RunArtifactError("run cancelled", reason="cancelled")
         marker = b"sha256:" + hashlib.sha256(manifest_bytes).hexdigest().encode() + b"\n"
         with (directory / "COMPLETE").open("xb") as stream:
             stream.write(marker)
@@ -354,10 +370,16 @@ def publish_run(scenario: Path, runs_parent: Path, *,
             except OSError as cleanup_error:
                 raise RunArtifactError(
                     f"publication failed: {exc}; marker cleanup failed: {cleanup_error}; "
-                    f"inspect run: {directory}") from exc
+                    f"inspect run: {directory}", stage=phase,
+                    reason=getattr(exc, "reason", None)) from exc
         if isinstance(exc, RunArtifactError):
-            raise RunArtifactError(f"{exc}; incomplete run retained: {directory}") from exc
-        raise RunArtifactError(f"publication failed: {exc}; incomplete run retained: {directory}") from exc
+            raise RunArtifactError(
+                f"{exc}; incomplete run retained: {directory}",
+                stage=exc.stage or phase, reason=exc.reason,
+                returncode=exc.returncode, stdout=exc.stdout, stderr=exc.stderr) from exc
+        raise RunArtifactError(
+            f"publication failed: {exc}; incomplete run retained: {directory}",
+            stage=phase, reason="artifact_failure") from exc
 
 
 def main() -> None:

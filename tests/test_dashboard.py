@@ -14,6 +14,7 @@ from gridwise import dashboard, run_artifacts
 from gridwise.data import import_energy_csv
 from gridwise.desktop import CHARTS, chart_values
 from gridwise.device import DeviceParameters
+from gridwise.diagnostics import FailureCategory
 
 
 ROOT = dashboard.ROOT
@@ -180,6 +181,21 @@ def test_valid_but_infeasible_custom_devices_fail_without_completed_run(tmp_path
     directories = list(runs_root.glob("run-*"))
     assert len(directories) == 1
     assert not (directories[0] / "COMPLETE").exists()
+
+
+def test_infeasible_dashboard_error_exposes_evidence_backed_diagnostic(tmp_path):
+    imported = import_energy_csv(SAMPLE, 1)
+    devices = DeviceParameters(0, 80, 0, 0, 0, 0, 0.95, 0.95)
+
+    with pytest.raises(dashboard.DashboardError) as caught:
+        dashboard.run_comparison(
+            imported, runs_root=tmp_path, device_parameters=devices)
+
+    diagnostic = caught.value.diagnostic
+    assert diagnostic.category is FailureCategory.INFEASIBLE
+    assert diagnostic.solver_status == "error"
+    assert diagnostic.termination_condition == "infeasible"
+    assert any("termination_condition=infeasible" in item for item in diagnostic.evidence)
 
 
 def test_peak_cap_comparison_publishes_verified_policy_and_metrics(tmp_path):
@@ -417,8 +433,9 @@ def test_chart_selection_rejects_mismatched_series_length():
 def test_solver_timeout_fails_and_cleans_temporary_files(tmp_path, monkeypatch):
     imported = import_energy_csv(SAMPLE, 1)
     monkeypatch.setattr(dashboard.tempfile, "tempdir", str(tmp_path))
-    with pytest.raises(dashboard.DashboardError, match="timed out"):
+    with pytest.raises(dashboard.DashboardError, match="timed out") as caught:
         dashboard.run_comparison(imported, solve_timeout_seconds=0.001)
+    assert caught.value.diagnostic.category is FailureCategory.SOLVER_TIMEOUT
     assert list(tmp_path.glob("gridwise-ui-*")) == []
 
 
@@ -432,6 +449,27 @@ def test_solver_failure_fails_closed_and_cleans_temporary_files(tmp_path, monkey
     with pytest.raises(dashboard.DashboardError, match="no optimal solution"):
         dashboard.run_comparison(imported, template_path)
     assert list(tmp_path.glob("gridwise-ui-*")) == []
+
+
+@pytest.mark.parametrize(("stage", "reason", "category"), [
+    ("audit", "command_failed", FailureCategory.AUDIT_FAILED),
+    ("artifact", "invalid", FailureCategory.ARTIFACT_INVALID),
+    ("solve", "cancelled", FailureCategory.CANCELLED),
+])
+def test_dashboard_preserves_structured_pipeline_failure_category(
+        tmp_path, monkeypatch, stage, reason, category):
+    imported = import_energy_csv(SAMPLE, 1)
+
+    def fail(*_args, **_kwargs):
+        raise run_artifacts.RunArtifactError(
+            "synthetic structured failure", stage=stage, reason=reason)
+
+    monkeypatch.setattr(dashboard, "publish_run", fail)
+    with pytest.raises(dashboard.DashboardError) as caught:
+        dashboard.run_comparison(imported, runs_root=tmp_path)
+
+    assert caught.value.diagnostic.category is category
+    assert caught.value.__cause__.stage == stage
 
 
 def test_cancelled_child_process_is_reaped():

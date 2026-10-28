@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .data import DataError, ImportResult, prepare_visualization_data
 from .device import DeviceParameterError, DeviceParameters
+from .diagnostics import FailureStage, RunDiagnostic, diagnose_failure
 from .run_artifacts import RUN_NAME, RunArtifactError, VerifiedRun, publish_run, read_verified_run
 
 
@@ -21,6 +22,10 @@ MAX_HISTORY_SCAN = 1000
 
 class DashboardError(RuntimeError):
     """The requested comparison cannot be shown reliably."""
+
+    def __init__(self, message, *, diagnostic: RunDiagnostic | None = None):
+        super().__init__(message)
+        self.diagnostic = diagnostic
 
 
 @dataclass(frozen=True)
@@ -327,25 +332,36 @@ def run_comparison(imported: ImportResult, template_path: Path = SYNTHETIC_TEMPL
                    peak_cap_kw: float | None = None,
                    device_parameters: DeviceParameters | None = None) -> DashboardResult:
     """Publish, independently audit, safely reread, then prepare charts."""
-    scenario = build_scenario(imported, template_path,
-                              device_parameters=device_parameters)
-    peak_cap_kw = _validated_peak_cap(peak_cap_kw, float(scenario["grid_max_kw"]))
+    try:
+        scenario = build_scenario(imported, template_path,
+                                  device_parameters=device_parameters)
+        peak_cap_kw = _validated_peak_cap(peak_cap_kw, float(scenario["grid_max_kw"]))
+    except DashboardError as exc:
+        raise DashboardError(
+            str(exc), diagnostic=diagnose_failure(
+                exc, stage_hint=FailureStage.INPUT)) from exc
     cancel_event = cancel_event or threading.Event()
     if solve_timeout_seconds <= 0 or audit_timeout_seconds <= 0:
         raise DashboardError("process timeouts must be positive")
+    stage = FailureStage.ARTIFACT
     try:
         with tempfile.TemporaryDirectory(prefix="gridwise-ui-") as temporary:
             source = Path(temporary) / "scenario.json"
             source.write_text(json.dumps(scenario, ensure_ascii=False, allow_nan=False),
                               encoding="utf-8")
             destination_root = Path(runs_root or default_runs_root())
+            stage = FailureStage.SOLVE
             directory = publish_run(source, destination_root,
                                     cancel_event=cancel_event,
                                     solve_timeout_seconds=solve_timeout_seconds,
                                     audit_timeout_seconds=audit_timeout_seconds,
                                     peak_cap_kw=peak_cap_kw)
             if cancel_event.is_set():
-                raise DashboardError("run cancelled")
+                cancelled = RunArtifactError(
+                    "run cancelled", stage="control", reason="cancelled")
+                raise DashboardError(
+                    "run cancelled", diagnostic=diagnose_failure(cancelled))
+            stage = FailureStage.ARTIFACT
             verified = read_verified_run(directory)
             chart = _chart_from_verified(imported, verified)
             summary = json.loads(verified.files["summary.json"])
@@ -358,4 +374,6 @@ def run_comparison(imported: ImportResult, template_path: Path = SYNTHETIC_TEMPL
                                    cost_mode_cost,
                                    _devices_from_verified(verified))
     except (DataError, DeviceParameterError, RunArtifactError, OSError, ValueError) as exc:
-        raise DashboardError(f"comparison unavailable: {exc}") from exc
+        raise DashboardError(
+            f"comparison unavailable: {exc}",
+            diagnostic=diagnose_failure(exc, stage_hint=stage)) from exc
