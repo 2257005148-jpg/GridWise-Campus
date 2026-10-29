@@ -76,4 +76,8 @@ Tk 主线程持有模式单选项、上限输入和结果策略栏；后台调�
 
 完整 UTF-8 HTML 先在内存中生成并转义动态文本，再写入目标目录的私有临时文件、刷新并 `fsync`，最后以 `os.replace` 发布。默认拒绝已有目标，目录、符号链接、junction、非 `.html` 或相对路径均拒绝。生成或发布失败时不产生成功目标；临时清理失败会同时报告原始异常、清理异常和残留绝对路径。单文件替换不构成对恶意本机写入者或断电的持久性保证。 / Rendering precedes same-directory staged publication. Failure is closed and cleanup failures retain the original cause and residual path; this is not a power-loss or hostile-local-writer guarantee.
 
+## v0.3.20 报告时序图 / Report timelines
+
+`reports.py` 将控制层已验证的 `chart` 时序直接渲染为自包含 SVG。单次报告展示优化与无储能基线的购电功率、累计电费，以及优化电池 SOC；A/B 报告使用 `compare_verified_runs()` 同一次公平性检查产生的两份图表，展示运行 A 与 B 的对应三组曲线。SVG 只负责坐标映射和 HTML 转义，不重新计算电费、购电量、峰值或优化结果。空序列、行数不匹配、缺失序列及 NaN/Infinity 在文件发布前失败。/ The report layer renders already validated chart series as inline SVG. Fair A/B charts are carried by the same comparison result that passed source, solver, model, equipment and baseline checks; no second unbound read or metric implementation is introduced.
+
 桌面按钮复用现有后台任务、取消事件和 generation 隔离；文件对话框在主线程打开，安全读取、比较和写入在工作线程完成，最终状态只由主线程更新。输入、步长、设备、运行根目录或 A/B 选择变化时，相应导出资格立即失效。 / Export uses the existing worker and generation boundary, while all Tk mutations stay on the main thread.

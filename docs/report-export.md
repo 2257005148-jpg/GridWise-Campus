@@ -2,9 +2,9 @@
 
 ## 范围 / Scope
 
-v0.3.16 提供两种离线、自包含、UTF-8 HTML 报告：一个已验证历史运行的单次报告，以及两个公平历史运行的 A/B 对比报告。报告不调用新的优化算法，不重新计算电费、购电量或峰值，也不改变运行产物、独立审计器或数学模型。/ v0.3.16 exports a self-contained UTF-8 HTML report for one verified run or one fair A/B comparison. It does not introduce a solver path, metric implementation, artifact format or audit rule.
+v0.3.20 提供两种离线、自包含、UTF-8 HTML 报告：一个已验证历史运行的单次报告，以及两个公平历史运行的 A/B 对比报告。报告不调用新的优化算法，不重新计算电费、购电量或峰值，也不改变运行产物、独立审计器或数学模型。/ v0.3.20 exports a self-contained UTF-8 HTML report for one verified run or one fair A/B comparison. It does not introduce a solver path, metric implementation, artifact format or audit rule.
 
-首版用指标卡和表格呈现结果，不复制桌面的五张曲线图。报告可由浏览器离线打开；没有脚本、远程字体、CDN 或网络请求。/ The first version uses metric cards and tables rather than reproducing the five desktop charts. It contains no scripts, remote fonts, CDN assets or network calls.
+报告保留指标卡和表格，并增加三张内联 SVG 时序图。报告可由浏览器离线打开；没有脚本、远程字体、CDN 或网络请求。/ Reports retain their metric cards and tables and add three inline SVG timelines. They contain no scripts, remote fonts, CDN assets or network calls.
 
 ## 验证入口 / Verification inputs
 
@@ -22,9 +22,14 @@ A/B 报告必须重新执行 `dashboard.compare_verified_runs()`。两个运行�
 - 电网功率、电池容量、充放电功率、初末 SOC 能量和效率；
 - 电费 CNY、购电量 kWh、购电峰值 kW；
 - 完整性状态，以及 A/B 报告的公平状态和 `B − A`；
+- 已验证的购电功率、累计电费和电池 SOC 时序；
 - 指标公式、单位和适用限制。
 
-Both report types include the input context, policy, equipment parameters, verified metrics, units and limitations. The comparison report additionally includes the signed `B − A` and fair-comparison status.
+Both report types include the input context, policy, equipment parameters, verified metrics, units, timelines and limitations. The comparison report additionally includes the signed `B − A` and fair-comparison status.
+
+单次报告的购电功率和累计电费同时显示优化方案与无储能基线，SOC 显示优化方案。A/B 报告显示运行 A 与 B 的优化购电功率、累计电费和 SOC。当前图表数据没有独立充/放电功率序列，因此报告不编造这些曲线。横轴为时段编号，纵轴明确标注 `kW`、`CNY` 或 `kWh`。/ Single-run charts compare optimized and baseline grid power and cumulative cost, plus optimized SOC. A/B charts compare the two verified strategies. Charge/discharge series are not available in the current chart contract and are not fabricated.
+
+为避免长序列标签拥挤，横轴只标注起点、中点和终点时段；极大值及小于 `0.01` 的非零纵轴刻度使用紧凑科学计数法。图表保留 `680px` 最小可读宽度，窄窗口在图表区域内横向滚动，不压缩图例和刻度文字。该规则只改变显示，不改变曲线点或指标。/ The period axis labels only its start, midpoint and end. Extreme axis values use compact scientific notation, and narrow viewports scroll the chart at a readable minimum width rather than shrinking labels into illegibility.
 
 电费、购电量和峰值始终分开解释。电费降低不自动证明削峰或节能；购电量改变也不等于现场节能效果。哈希只检测所读内容变化，不能证明数据来源真实、授权或可信。报告不证明真实校园设备行为、跨平台兼容或求解结果以外的外部效果。/ Cost, energy and peak remain independent. Hashes detect byte changes but do not prove source truth, authorization or real-device behavior.
 
@@ -50,7 +55,7 @@ Changing the input CSV, step, equipment parameters, runs root or A/B selection i
 
 ## 未实现 / Not implemented
 
-- 报告内五张时序曲线；
+- 负荷/PV、逐时电费及独立充/放电功率曲线；
 - PDF、Word 或联网发布；
 - 自动覆盖、自动清理或历史报告数据库；
 - 电子签名、真实性证明或发布授权。

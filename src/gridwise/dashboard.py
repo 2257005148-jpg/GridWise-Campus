@@ -125,6 +125,7 @@ class ComparedRun:
     device_parameters: DeviceParameters
     model_version: str
     solver_name: str
+    chart: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -179,7 +180,8 @@ def _compared_run(verified: VerifiedRun, chart: dict) -> ComparedRun:
                        _comparison_metrics(chart),
                        _devices_from_verified(verified),
                        str(verified.metadata["model_version"]),
-                       str(verified.metadata["solver_name"]))
+                       str(verified.metadata["solver_name"]),
+                       chart)
 
 
 def compare_verified_runs(imported: ImportResult, run_a_name: str, run_b_name: str,

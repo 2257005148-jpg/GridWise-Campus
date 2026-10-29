@@ -256,6 +256,8 @@ def test_verified_history_runs_compare_metrics_and_signed_delta(tmp_path):
     assert comparison.run_b.name == capped.run_name
     assert comparison.run_b.optimization_mode == "peak_cap"
     assert comparison.run_b.peak_cap_kw == 55
+    assert comparison.run_a.chart == cost.chart
+    assert comparison.run_b.chart == capped.chart
     assert comparison.units == {
         "cost_cny": "CNY",
         "grid_energy_kwh": "kWh",

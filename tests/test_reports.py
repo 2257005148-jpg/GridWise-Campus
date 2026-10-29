@@ -2,7 +2,9 @@
 
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 import threading
+import xml.etree.ElementTree as ET
 
 import pytest
 
@@ -42,6 +44,19 @@ def test_single_and_ab_html_reuse_verified_metrics_and_escape_input_source(tmp_p
     assert "VERIFIED" in single
     assert "grid_kw × price_cny_per_kwh × step_hours" in single
     assert "不能证明输入真实性" in single
+    assert single.count('class="timeseries"') == 3
+    single_svgs = re.findall(r"<svg\b.*?</svg>", single, flags=re.DOTALL)
+    assert len(single_svgs) == 3
+    assert all(ET.fromstring(svg).tag == "svg" for svg in single_svgs)
+    assert "购电功率时序 / Grid power timeline" in single
+    assert "累计电费时序 / Cumulative cost timeline" in single
+    assert "电池 SOC 时序 / Battery SOC timeline" in single
+    assert "优化 / Optimized" in single and "基线 / Baseline" in single
+    optimized_grid = cost.chart["series"]["optimized_grid_kw"]
+    assert (f"{len(optimized_grid)} points; min {min(optimized_grid):.2f} kW; "
+            f"max {max(optimized_grid):.2f} kW") in single
+    assert "<script" not in single.lower()
+    assert "http://" not in single.lower() and "https://" not in single.lower()
 
     assert "A/B 公平对比报告" in comparison
     assert "MATCHED" in comparison
@@ -50,6 +65,99 @@ def test_single_and_ab_html_reuse_verified_metrics_and_escape_input_source(tmp_p
     assert "-3.12 kWh" in comparison
     assert "-35.00 kW" in comparison
     assert comparison.count("80.00 kWh") >= 2
+    assert comparison.count('class="timeseries"') == 3
+    comparison_svgs = re.findall(r"<svg\b.*?</svg>", comparison, flags=re.DOTALL)
+    assert len(comparison_svgs) == 3
+    assert all(ET.fromstring(svg).tag == "svg" for svg in comparison_svgs)
+    assert "运行 A / Run A" in comparison and "运行 B / Run B" in comparison
+    assert "购电功率 A/B / Grid power A/B" in comparison
+    assert "累计电费 A/B / Cumulative cost A/B" in comparison
+    assert "电池 SOC A/B / Battery SOC A/B" in comparison
+    capped_grid = capped.chart["series"]["optimized_grid_kw"]
+    assert (f"{len(capped_grid)} points; min {min(capped_grid):.2f} kW; "
+            f"max {max(capped_grid):.2f} kW") in comparison
+
+
+@pytest.mark.parametrize("invalid", ["empty", "nan", "infinity"])
+def test_report_rejects_empty_or_nonfinite_timeseries_before_publication(
+        tmp_path, monkeypatch, invalid):
+    imported = import_energy_csv(SAMPLE, 1)
+    run_name = "run-" + "1" * 32
+    devices = DeviceParameters(120, 80, 40, 40, 30, 30, 0.95, 0.95)
+    timestamps = [record.timestamp for record in imported.records]
+    count = len(timestamps)
+    series = {
+        "optimized_grid_kw": [10.0] * count,
+        "baseline_grid_kw": [12.0] * count,
+        "optimized_cumulative_cost_cny": [float(index + 1) for index in range(count)],
+        "baseline_cumulative_cost_cny": [float(index + 2) for index in range(count)],
+        "optimized_soc_kwh": [30.0] * count,
+    }
+    if invalid == "empty":
+        timestamps = []
+        series = {key: [] for key in series}
+    elif invalid == "nan":
+        series["optimized_grid_kw"][1] = float("nan")
+    else:
+        series["optimized_soc_kwh"][1] = float("inf")
+    chart = {
+        "timestamps": timestamps,
+        "series": series,
+        "metrics": {
+            "optimized": {"cost_cny": 10, "grid_energy_kwh": 20, "peak_grid_kw": 10},
+            "baseline": {"cost_cny": 12, "grid_energy_kwh": 24, "peak_grid_kw": 12},
+        },
+        "delta_optimized_minus_baseline": {
+            "cost_cny": -2, "grid_energy_kwh": -4, "peak_grid_kw": -2},
+    }
+    monkeypatch.setattr(
+        reports, "load_verified_comparison",
+        lambda *_args, **_kwargs: dashboard.DashboardResult(
+            chart, "VERIFIED", run_name, "cost", None, None, devices))
+    target = tmp_path / f"{invalid}.html"
+
+    with pytest.raises(reports.ReportError, match="time series"):
+        reports.export_single_run_report(
+            target, imported, run_name, tmp_path, generated_at=GENERATED_AT)
+    assert not target.exists()
+
+
+def test_report_svg_compacts_extreme_axis_labels_and_preserves_narrow_readability(
+        tmp_path, monkeypatch):
+    imported = import_energy_csv(SAMPLE, 1)
+    run_name = "run-" + "2" * 32
+    devices = DeviceParameters(1e12, 80, 40, 40, 30, 30, 0.95, 0.95)
+    timestamps = [record.timestamp for record in imported.records]
+    count = len(timestamps)
+    chart = {
+        "timestamps": timestamps,
+        "series": {
+            "optimized_grid_kw": [1e12] * count,
+            "baseline_grid_kw": [5e11] * count,
+            "optimized_cumulative_cost_cny": [5e-8] * count,
+            "baseline_cumulative_cost_cny": [1e-7] * count,
+            "optimized_soc_kwh": [30.0] * count,
+        },
+        "metrics": {
+            "optimized": {"cost_cny": 1, "grid_energy_kwh": 1, "peak_grid_kw": 1e12},
+            "baseline": {"cost_cny": 1, "grid_energy_kwh": 1, "peak_grid_kw": 5e11},
+        },
+        "delta_optimized_minus_baseline": {
+            "cost_cny": 0, "grid_energy_kwh": 0, "peak_grid_kw": 5e11},
+    }
+    monkeypatch.setattr(
+        reports, "load_verified_comparison",
+        lambda *_args, **_kwargs: dashboard.DashboardResult(
+            chart, "VERIFIED", run_name, "cost", None, None, devices))
+
+    html = reports.build_single_run_html(
+        imported, run_name, tmp_path, generated_at=GENERATED_AT).decode("utf-8")
+
+    assert '>1.00e+12</text>' in html
+    assert '>1.00e-7</text>' in html
+    assert '<div class="chart-viewport"><svg class="timeseries"' in html
+    assert ".chart-viewport {overflow-x:auto}" in html
+    assert ".timeseries {display:block;width:100%;min-width:680px" in html
 
 
 def test_html_report_publication_is_atomic_and_refuses_existing_or_directory(tmp_path):

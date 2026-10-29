@@ -150,6 +150,177 @@ def _comparison_rows(run_a: dict[str, float], run_b: dict[str, float],
         for key, label, unit in definitions)
 
 
+def _chart_timestamps(chart: dict, where: str, expected_rows: int) -> tuple[str, ...]:
+    if not isinstance(chart, dict):
+        raise ReportError(f"{where}.time series: expected chart object")
+    raw = chart.get("timestamps")
+    if not isinstance(raw, (list, tuple)) or not raw:
+        raise ReportError(f"{where}.time series: timestamps must be non-empty")
+    if len(raw) != expected_rows:
+        raise ReportError(
+            f"{where}.time series: expected {expected_rows} periods, got {len(raw)}")
+    timestamps = []
+    for index, value in enumerate(raw, 1):
+        if not isinstance(value, str) or not value:
+            raise ReportError(f"{where}.time series.timestamps[{index}]: expected text")
+        timestamps.append(value)
+    return tuple(timestamps)
+
+
+def _chart_values(chart: dict, key: str, count: int, where: str) -> tuple[float, ...]:
+    series = chart.get("series")
+    if not isinstance(series, dict):
+        raise ReportError(f"{where}.time series: missing series object")
+    raw = series.get(key)
+    if not isinstance(raw, (list, tuple)) or len(raw) != count:
+        actual = len(raw) if isinstance(raw, (list, tuple)) else "missing"
+        raise ReportError(
+            f"{where}.time series.{key}: expected {count} values, got {actual}")
+    return tuple(_number(value, f"{where}.time series.{key}[{index}]")
+                 for index, value in enumerate(raw, 1))
+
+
+def _axis_number(value: float) -> str:
+    magnitude = abs(value)
+    if magnitude == 0:
+        return "0"
+    if magnitude >= 100_000 or magnitude < 0.01:
+        mantissa, exponent = f"{value:.2e}".split("e")
+        return f"{mantissa}e{int(exponent):+d}"
+    return f"{value:,.2f}"
+
+
+def _render_svg(chart_id: str, title: str, unit: str, timestamps: tuple[str, ...],
+                series: tuple[tuple[str, str, str, tuple[float, ...]], ...]) -> str:
+    width, height = 900, 300
+    left, right, top, bottom = 68.0, 880.0, 46.0, 246.0
+    values = [value for _key, _label, _color, items in series for value in items]
+    lower, upper = min(0.0, min(values)), max(0.0, max(values))
+    if math.isclose(lower, upper, rel_tol=0, abs_tol=1e-12):
+        upper = lower + 1.0
+    span = upper - lower
+
+    def x_at(index: int) -> float:
+        if len(timestamps) == 1:
+            return (left + right) / 2
+        return left + (right - left) * index / (len(timestamps) - 1)
+
+    def y_at(value: float) -> float:
+        return bottom - (value - lower) * (bottom - top) / span
+
+    grid = []
+    for index in range(5):
+        y = top + (bottom - top) * index / 4
+        value = upper - span * index / 4
+        grid.append(
+            f'<line x1="{left:.2f}" y1="{y:.2f}" x2="{right:.2f}" y2="{y:.2f}" '
+            f'class="chart-grid"/><text x="{left - 9:.2f}" y="{y + 4:.2f}" '
+            f'class="axis-label" text-anchor="end">{_axis_number(value)}</text>')
+
+    period_ticks = []
+    for index in sorted({0, len(timestamps) // 2, len(timestamps) - 1}):
+        x = x_at(index)
+        period_ticks.append(
+            f'<line x1="{x:.2f}" y1="{bottom:.2f}" x2="{x:.2f}" '
+            f'y2="{bottom + 5:.2f}" class="chart-axis"/>'
+            f'<text x="{x:.2f}" y="{bottom + 21:.2f}" class="axis-label" '
+            f'text-anchor="middle">{index + 1}</text>')
+
+    descriptions = []
+    legends = []
+    paths = []
+    for index, (key, label, color, items) in enumerate(series):
+        descriptions.append(
+            f"{label}: {len(items)} points; min {min(items):.2f} {unit}; "
+            f"max {max(items):.2f} {unit}")
+        legend_x = 20 + index * 245
+        legends.append(
+            f'<line x1="{legend_x}" y1="22" x2="{legend_x + 26}" y2="22" '
+            f'stroke="{escape(color, quote=True)}" stroke-width="3"/>'
+            f'<text x="{legend_x + 34}" y="26" class="legend-label">'
+            f'{escape(label)}</text>')
+        points = " ".join(
+            f"{x_at(item_index):.2f},{y_at(value):.2f}"
+            for item_index, value in enumerate(items))
+        raw_values = " ".join(f"{value:.12g}" for value in items)
+        paths.append(
+            f'<polyline fill="none" stroke="{escape(color, quote=True)}" '
+            f'stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" '
+            f'vector-effect="non-scaling-stroke" points="{points}" '
+            f'data-series-key="{escape(key, quote=True)}" '
+            f'data-values="{escape(raw_values, quote=True)}"/>')
+
+    description = "; ".join(descriptions)
+    return f"""<figure class="chart">
+<figcaption>{escape(title)}</figcaption>
+<div class="chart-viewport"><svg class="timeseries" viewBox="0 0 {width} {height}" role="img"
+ aria-labelledby="{escape(chart_id, quote=True)}-title {escape(chart_id, quote=True)}-desc"
+ data-chart="{escape(chart_id, quote=True)}" data-start="{escape(timestamps[0], quote=True)}"
+ data-end="{escape(timestamps[-1], quote=True)}">
+<title id="{escape(chart_id, quote=True)}-title">{escape(title)}</title>
+<desc id="{escape(chart_id, quote=True)}-desc">{escape(description)}</desc>
+<rect x="0" y="0" width="{width}" height="{height}" class="chart-paper"/>
+{''.join(grid)}
+<line x1="{left:.2f}" y1="{top:.2f}" x2="{left:.2f}" y2="{bottom:.2f}" class="chart-axis"/>
+<line x1="{left:.2f}" y1="{bottom:.2f}" x2="{right:.2f}" y2="{bottom:.2f}" class="chart-axis"/>
+{''.join(period_ticks)}
+<text x="18" y="49" class="axis-title">{escape(unit)}</text>
+<text x="{(left + right) / 2:.2f}" y="292" class="axis-title" text-anchor="middle">时段 / Period</text>
+{''.join(legends)}
+{''.join(paths)}
+</svg></div></figure>"""
+
+
+def _single_timeline_charts(chart: dict, expected_rows: int) -> str:
+    timestamps = _chart_timestamps(chart, "single", expected_rows)
+    definitions = (
+        ("single-grid", "购电功率时序 / Grid power timeline", "kW", (
+            ("optimized_grid_kw", "优化 / Optimized", "#087e83"),
+            ("baseline_grid_kw", "基线 / Baseline", "#587184"))),
+        ("single-cost", "累计电费时序 / Cumulative cost timeline", "CNY", (
+            ("optimized_cumulative_cost_cny", "优化 / Optimized", "#087e83"),
+            ("baseline_cumulative_cost_cny", "基线 / Baseline", "#587184"))),
+        ("single-soc", "电池 SOC 时序 / Battery SOC timeline", "kWh", (
+            ("optimized_soc_kwh", "SOC", "#3675a8"),)),
+    )
+    figures = []
+    for chart_id, title, unit, items in definitions:
+        series = tuple((key, label, color,
+                        _chart_values(chart, key, len(timestamps), "single"))
+                       for key, label, color in items)
+        figures.append(_render_svg(chart_id, title, unit, timestamps, series))
+    return '<section><h2>运行时序 / Run timelines</h2><div class="charts">' + \
+        "".join(figures) + "</div></section>"
+
+
+def _comparison_timeline_charts(comparison: HistoricalRunComparison,
+                                expected_rows: int) -> str:
+    chart_a, chart_b = comparison.run_a.chart, comparison.run_b.chart
+    timestamps_a = _chart_timestamps(chart_a, "run_a", expected_rows)
+    timestamps_b = _chart_timestamps(chart_b, "run_b", expected_rows)
+    if timestamps_a != timestamps_b:
+        raise ReportError("comparison time series: timestamps differ")
+    definitions = (
+        ("comparison-grid", "购电功率 A/B / Grid power A/B", "kW",
+         "optimized_grid_kw"),
+        ("comparison-cost", "累计电费 A/B / Cumulative cost A/B", "CNY",
+         "optimized_cumulative_cost_cny"),
+        ("comparison-soc", "电池 SOC A/B / Battery SOC A/B", "kWh",
+         "optimized_soc_kwh"),
+    )
+    figures = []
+    for chart_id, title, unit, key in definitions:
+        series = (
+            (f"run_a.{key}", "运行 A / Run A", "#087e83",
+             _chart_values(chart_a, key, len(timestamps_a), "run_a")),
+            (f"run_b.{key}", "运行 B / Run B", "#b07820",
+             _chart_values(chart_b, key, len(timestamps_b), "run_b")),
+        )
+        figures.append(_render_svg(chart_id, title, unit, timestamps_a, series))
+    return '<section><h2>策略时序对比 / Policy timelines</h2><div class="charts">' + \
+        "".join(figures) + "</div></section>"
+
+
 def _document(title: str, generated: str, context: dict, body: str) -> bytes:
     source = escape(str(context["source"]))
     html = f"""<!doctype html>
@@ -166,8 +337,11 @@ h1 {{margin:0 0 8px;font-size:30px;line-height:1.2}} h2 {{margin:30px 0 12px;fon
 .status {{display:inline-block;border:1px solid var(--teal);color:var(--teal);font-weight:700;padding:5px 10px;margin:8px 8px 0 0}}
 .metrics {{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:14px}} .metric {{background:var(--white);border-top:4px solid var(--teal);padding:16px}}
 .metric span,.metric small {{display:block;color:var(--muted)}} .metric strong {{display:block;font-size:27px;margin-top:8px}} table {{width:100%;border-collapse:collapse;background:var(--white)}} th,td {{padding:10px 12px;border-bottom:1px solid var(--line);text-align:left}} th {{font-weight:600}} td {{text-align:right}} .delta {{color:var(--gold);font-weight:700}}
+.charts {{display:grid;gap:16px}} .chart {{margin:0;background:var(--white);border:1px solid var(--line)}} .chart figcaption {{padding:12px 16px 0;font-weight:700}}
+.chart-viewport {{overflow-x:auto}} .timeseries {{display:block;width:100%;min-width:680px;height:auto;min-height:220px}} .chart-paper {{fill:var(--white)}} .chart-grid {{stroke:#e3eaec;stroke-width:1}} .chart-axis {{stroke:#8ca2ad;stroke-width:1.2}}
+.axis-label {{fill:var(--muted);font-size:12px}} .axis-title,.legend-label {{fill:var(--ink);font-size:13px}} .legend-label {{font-weight:600}}
 .notice {{border-left:4px solid var(--gold);background:#fffaf0;padding:12px 16px}} code {{font-family:Consolas,monospace;font-size:.92em}} footer {{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);color:var(--muted)}}
-@media (max-width:720px) {{.metrics {{grid-template-columns:1fr}} main {{padding:24px 16px}} table {{font-size:13px}} th,td {{padding:8px}}}}
+@media (max-width:720px) {{.metrics {{grid-template-columns:1fr}} main {{padding:24px 16px}} table {{font-size:13px}} th,td {{padding:8px}} .timeseries {{min-height:180px}}}}
 </style>
 </head>
 <body><main>
@@ -208,6 +382,7 @@ def build_single_run_html(imported: ImportResult, run_name: str, runs_root: Path
 <section><h2>优化方案 / Optimized result</h2><div class="metrics">{_cards(optimized)}</div></section>
 <section><h2>无储能基线 / No-storage baseline</h2><div class="metrics">{_cards(baseline)}</div></section>
 <section><h2>优化 − 基线 / Optimized − baseline</h2><div class="metrics">{_cards(delta)}</div></section>
+{_single_timeline_charts(result.chart, context["rows"])}
 <section><h2>设备参数 / Equipment parameters</h2><table>{_device_rows(result.device_parameters)}</table></section>"""
         return _document("GridWise Campus 单次运行报告 / Single-run report",
                          _generated_at(generated_at), context, body)
@@ -235,6 +410,7 @@ def build_comparison_html(imported: ImportResult, run_a_name: str, run_b_name: s
 <section><h2>验证状态 / Verification</h2><span class="status">{escape(comparison.integrity_status)}</span><span class="status">{escape(comparison.fairness_status)}</span></section>
 <section><h2>策略 / Policies</h2><p><strong>A:</strong> {escape(_mode(comparison.run_a.optimization_mode, comparison.run_a.peak_cap_kw))}<br><strong>B:</strong> {escape(_mode(comparison.run_b.optimization_mode, comparison.run_b.peak_cap_kw))}</p><p class="meta">A: {escape(comparison.run_a.name)}<br>B: {escape(comparison.run_b.name)}</p></section>
 <section><h2>指标对比 / Metric comparison</h2><table><thead><tr><th>指标 / Metric</th><th>运行 A</th><th>运行 B</th><th>B − A</th></tr></thead><tbody>{_comparison_rows(metrics_a, metrics_b, delta)}</tbody></table></section>
+{_comparison_timeline_charts(comparison, context["rows"])}
 <section><h2>运行 A 设备参数 / Run A equipment</h2><table>{_device_rows(comparison.run_a.device_parameters)}</table></section>
 <section><h2>运行 B 设备参数 / Run B equipment</h2><table>{_device_rows(comparison.run_b.device_parameters)}</table></section>"""
         return _document("GridWise Campus A/B 公平对比报告 / Fair comparison report",
