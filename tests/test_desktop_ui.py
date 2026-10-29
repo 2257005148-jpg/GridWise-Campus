@@ -20,7 +20,7 @@ from tkinter import ttk
 import gridwise.desktop as desktop
 from gridwise.dashboard import (ComparedRun, ComparisonMetrics, DashboardError,
                                 DashboardResult, HistoricalRunComparison,
-                                RunHistoryEntry)
+                                RunHistoryEntry, RunHistoryPreview)
 from gridwise.device import DeviceParameters
 from gridwise.diagnostics import (FailureCategory, FailureStage, RunDiagnostic,
                                   diagnose_failure)
@@ -58,6 +58,15 @@ def close_desktop(root, app):
     if root.winfo_exists():
         app._on_close()
         pump(root, lambda: root.winfo_exists() == 0)
+
+
+def history_table_rows(app):
+    return tuple(app.history_table.item(item, "values")
+                 for item in app.history_table.get_children())
+
+
+def invoke_history_heading(app, column):
+    app.history_table.tk.call(app.history_table.heading(column, "command"))
 
 
 def test_close_removes_scheduled_tk_poll_callback():
@@ -500,12 +509,16 @@ def test_read_only_log_is_keyboard_reachable_and_page_can_scroll():
         root.update()
         widget = app.check_button
         seen = set()
-        for _ in range(12):
+        for _ in range(20):
             widget = widget.tk_focusNext()
             seen.add(str(widget))
         assert str(app.quality) in seen
         assert str(app.run_button) in seen
-        assert str(app.history_combo) in seen
+        assert str(app.history_search_entry) in seen
+        assert str(app.history_status_combo) in seen
+        assert str(app.history_mode_combo) in seen
+        assert str(app.clear_history_filters_button) in seen
+        assert str(app.history_table) in seen
         assert str(app.compare_a_combo) in seen
         assert str(app.compare_b_combo) in seen
         assert str(app.comparison_table) in seen
@@ -550,6 +563,343 @@ def test_verified_desktop_run_history_and_damaged_result(tmp_path):
         pump(root, lambda: app._active_kind is None, seconds=10)
         assert app.chart is None
         assert "失败" in app.status.get()
+    finally:
+        close_desktop(root, app)
+
+
+def test_history_search_and_filters_use_memory_and_clear_restores_all(monkeypatch):
+    root, app = new_desktop()
+    entries = [
+        RunHistoryEntry("run-" + "a" * 32, "VALID", "verified", "cost"),
+        RunHistoryEntry("run-" + "b" * 32, "VALID", "verified", "peak_cap", 55),
+        RunHistoryEntry("run-" + "c" * 32, "INCOMPLETE", "missing marker"),
+        RunHistoryEntry("run-" + "d" * 32, "DAMAGED", "hash mismatch"),
+    ]
+    monkeypatch.setattr(
+        desktop, "list_run_history",
+        lambda *_args, **_kwargs: pytest.fail("in-memory filtering must not rescan disk"))
+    try:
+        app._show_history(entries)
+        all_names = tuple(entry.name for entry in entries)
+        assert tuple(row[0] for row in history_table_rows(app)) == all_names
+
+        app.history_search.set("  RUN-" + "B" * 8)
+        assert tuple(row[0] for row in history_table_rows(app)) == (entries[1].name,)
+
+        app.history_search.set("")
+        app.history_status_filter.set("DAMAGED")
+        assert tuple(row[0] for row in history_table_rows(app)) == (entries[3].name,)
+
+        app.history_status_filter.set(desktop.HISTORY_FILTER_ALL)
+        app.history_mode_filter.set(desktop.HISTORY_MODE_COST)
+        assert tuple(row[0] for row in history_table_rows(app)) == (entries[0].name,)
+
+        app.history_search.set("not-present")
+        assert history_table_rows(app) == ()
+        assert "没有匹配运行" in app.history_filter_notice.get()
+        assert app.load_button.instate(["disabled"])
+        assert app.export_run_button.instate(["disabled"])
+
+        app._clear_history_filters()
+        assert app.history_search.get() == ""
+        assert app.history_status_filter.get() == desktop.HISTORY_FILTER_ALL
+        assert app.history_mode_filter.get() == desktop.HISTORY_FILTER_ALL
+        assert tuple(row[0] for row in history_table_rows(app)) == all_names
+        assert "显示 4 / 4" in app.history_filter_notice.get()
+    finally:
+        close_desktop(root, app)
+
+
+def test_history_filter_combination_keeps_invalid_status_semantics():
+    root, app = new_desktop()
+    incomplete = RunHistoryEntry(
+        "run-" + "e" * 32, "INCOMPLETE", "missing COMPLETE")
+    damaged = RunHistoryEntry(
+        "run-" + "f" * 32, "DAMAGED", "manifest digest mismatch")
+    peak = RunHistoryEntry(
+        "run-" + "e" * 16 + "f" * 16, "VALID", "verified", "peak_cap", 55)
+    try:
+        app._show_history([incomplete, damaged, peak])
+        app.history_search.set("RUN-" + "E" * 8)
+        app.history_status_filter.set("INCOMPLETE")
+        assert tuple(row[0] for row in history_table_rows(app)) == (incomplete.name,)
+        assert app._history_entries[incomplete.name].status == "INCOMPLETE"
+
+        app.history_status_filter.set(desktop.HISTORY_FILTER_ALL)
+        app.history_mode_filter.set(desktop.HISTORY_MODE_PEAK_CAP)
+        assert tuple(row[0] for row in history_table_rows(app)) == (peak.name,)
+        app.history_table.selection_set(peak.name)
+        app._select_history()
+        assert app.load_button.instate(["!disabled"])
+
+        app.history_status_filter.set("DAMAGED")
+        assert history_table_rows(app) == ()
+        assert app.selected_run.get() == ""
+    finally:
+        close_desktop(root, app)
+
+
+def test_history_table_shows_columns_and_invalid_detail_without_trusted_actions():
+    root, app = new_desktop()
+    cost = RunHistoryEntry("run-" + "a" * 32, "VALID", "verified", "cost")
+    peak = RunHistoryEntry(
+        "run-" + "b" * 32, "VALID", "verified", "peak_cap", 55)
+    incomplete = RunHistoryEntry(
+        "run-" + "c" * 32, "INCOMPLETE", "missing COMPLETE marker")
+    try:
+        app._show_history([cost, peak, incomplete])
+        assert tuple(app.history_table.cget("columns")) == (
+            "name", "status", "mode", "peak_cap")
+        assert app.history_table.cget("yscrollcommand")
+        assert history_table_rows(app) == (
+            (cost.name, "VALID", desktop.HISTORY_MODE_COST, "—"),
+            (peak.name, "VALID", desktop.HISTORY_MODE_PEAK_CAP, "55 kW"),
+            (incomplete.name, "INCOMPLETE", "未知 / Unknown", "—"),
+        )
+
+        app.history_table.selection_set(peak.name)
+        app._select_history()
+        assert app._selected_history_name(app.selected_run.get()) == peak.name
+        assert app.load_button.instate(["!disabled"])
+
+        app.history_table.selection_set(incomplete.name)
+        app._select_history()
+        assert app.load_button.instate(["disabled"])
+        assert app.export_run_button.instate(["disabled"])
+        assert "missing COMPLETE marker" in app.history_selection_detail.get()
+    finally:
+        close_desktop(root, app)
+
+
+def test_history_table_heading_sort_toggles_and_combines_with_filters(monkeypatch):
+    root, app = new_desktop()
+    missing = RunHistoryEntry("run-" + "d" * 32, "DAMAGED", "hash mismatch")
+    cap_60 = RunHistoryEntry(
+        "run-" + "c" * 32, "VALID", "verified", "peak_cap", 60)
+    cost = RunHistoryEntry("run-" + "b" * 32, "VALID", "verified", "cost")
+    cap_40 = RunHistoryEntry(
+        "run-" + "a" * 32, "VALID", "verified", "peak_cap", 40)
+    monkeypatch.setattr(
+        desktop, "list_run_history",
+        lambda *_args, **_kwargs: pytest.fail("sorting must not rescan disk"))
+    monkeypatch.setattr(
+        desktop, "preview_verified_run",
+        lambda *_args, **_kwargs: pytest.fail("sorting and filtering must not preview"))
+    try:
+        app._show_history([missing, cap_60, cost, cap_40])
+        assert tuple(row[0] for row in history_table_rows(app)) == (
+            cap_40.name, cost.name, cap_60.name, missing.name)
+
+        invoke_history_heading(app, "peak_cap")
+        assert tuple(row[0] for row in history_table_rows(app)) == (
+            cap_40.name, cap_60.name, missing.name, cost.name)
+        assert "▲" in app.history_table.heading("peak_cap", "text")
+
+        invoke_history_heading(app, "peak_cap")
+        assert tuple(row[0] for row in history_table_rows(app)) == (
+            cap_60.name, cap_40.name, missing.name, cost.name)
+        assert "▼" in app.history_table.heading("peak_cap", "text")
+
+        app.history_mode_filter.set(desktop.HISTORY_MODE_PEAK_CAP)
+        app.history_search.set("RUN-")
+        assert tuple(row[0] for row in history_table_rows(app)) == (
+            cap_60.name, cap_40.name)
+
+        invoke_history_heading(app, "status")
+        assert tuple(row[0] for row in history_table_rows(app)) == (
+            cap_60.name, cap_40.name)
+        invoke_history_heading(app, "status")
+        assert tuple(row[0] for row in history_table_rows(app)) == (
+            cap_60.name, cap_40.name)
+
+        app._clear_history_filters()
+        invoke_history_heading(app, "mode")
+        assert tuple(row[0] for row in history_table_rows(app)) == (
+            cost.name, cap_60.name, cap_40.name, missing.name)
+
+        invoke_history_heading(app, "name")
+        assert tuple(row[0] for row in history_table_rows(app)) == (
+            cap_40.name, cost.name, cap_60.name, missing.name)
+        invoke_history_heading(app, "name")
+        assert tuple(row[0] for row in history_table_rows(app)) == (
+            missing.name, cap_60.name, cost.name, cap_40.name)
+    finally:
+        close_desktop(root, app)
+
+
+def test_history_preview_button_shows_verified_metrics_mode_and_cap(monkeypatch):
+    root, app = new_desktop()
+    cost_name = "run-" + "a" * 32
+    peak_name = "run-" + "b" * 32
+    entries = [
+        RunHistoryEntry(cost_name, "VALID", "verified", "cost"),
+        RunHistoryEntry(peak_name, "VALID", "verified", "peak_cap", 55),
+    ]
+    previews = {
+        cost_name: RunHistoryPreview(
+            cost_name, "cost", None, ComparisonMetrics(131.01, 247.02, 90)),
+        peak_name: RunHistoryPreview(
+            peak_name, "peak_cap", 55, ComparisonMetrics(156.90, 243.90, 55)),
+    }
+    calls = []
+
+    def preview(imported, run_name, runs_root, *, cancel_event):
+        calls.append((imported, run_name, runs_root, cancel_event))
+        return previews[run_name]
+
+    monkeypatch.setattr(desktop, "preview_verified_run", preview)
+    try:
+        app._show_history(entries)
+        app.history_table.selection_set(peak_name)
+        app._select_history()
+        assert app.preview_button.instate(["!disabled"])
+        app._preview_history()
+        pump(root, lambda: app._active_kind is None)
+
+        assert len(calls) == 1
+        assert calls[0][1:3] == (peak_name, Path(app.runs_root.get()))
+        assert app.history_preview == previews[peak_name]
+        assert app.preview_table.item("cost_cny", "values") == (
+            "电费 / Cost", "156.90 CNY")
+        assert app.preview_table.item("grid_energy_kwh", "values") == (
+            "购电量 / Grid energy", "243.90 kWh")
+        assert app.preview_table.item("peak_grid_kw", "values") == (
+            "峰值购电功率 / Grid peak", "55.00 kW")
+        assert "峰值上限 / Peak cap" in app.history_preview_context.get()
+        assert "55" in app.history_preview_context.get()
+        assert "VERIFIED" in app.history_preview_status.get()
+
+        app.history_table.selection_set(cost_name)
+        app._select_history()
+        assert app.history_preview is None
+        app._preview_history()
+        pump(root, lambda: app._active_kind is None)
+        assert len(calls) == 2
+        assert "纯电费 / Cost-only" in app.history_preview_context.get()
+        assert "—" in app.history_preview_context.get()
+    finally:
+        close_desktop(root, app)
+
+
+def test_invalid_history_selection_clears_preview_and_never_invokes_controller(monkeypatch):
+    root, app = new_desktop()
+    valid = RunHistoryEntry("run-" + "a" * 32, "VALID", "verified", "cost")
+    damaged = RunHistoryEntry(
+        "run-" + "b" * 32, "DAMAGED", "manifest digest mismatch")
+    preview = RunHistoryPreview(
+        valid.name, "cost", None, ComparisonMetrics(1, 2, 3))
+    monkeypatch.setattr(
+        desktop, "preview_verified_run",
+        lambda *_args, **_kwargs: pytest.fail("invalid selection must not preview"))
+    try:
+        app._show_history([valid, damaged])
+        app.history_table.selection_set(valid.name)
+        app._select_history()
+        app._show_history_preview(preview)
+        assert app.history_preview is preview
+
+        app.history_table.selection_set(damaged.name)
+        app._select_history()
+        assert app.history_preview is None
+        assert app.preview_button.instate(["disabled"])
+        assert "manifest digest mismatch" in app.history_selection_detail.get()
+        assert app.preview_table.item("cost_cny", "values")[1] == "—"
+
+        app.history_search.set("RUN-")
+        invoke_history_heading(app, "status")
+        assert app.history_preview is None
+    finally:
+        close_desktop(root, app)
+
+
+def test_late_history_preview_cannot_replace_new_selection_or_generation(monkeypatch, tmp_path):
+    root, app = new_desktop()
+    name_a = "run-" + "a" * 32
+    name_b = "run-" + "b" * 32
+    entries = [
+        RunHistoryEntry(name_a, "VALID", "verified", "cost"),
+        RunHistoryEntry(name_b, "VALID", "verified", "peak_cap", 55),
+    ]
+    started = threading.Event()
+    release = threading.Event()
+
+    def delayed(_imported, run_name, _runs_root, *, cancel_event):
+        started.set()
+        release.wait(2)
+        return RunHistoryPreview(
+            run_name, "cost", None, ComparisonMetrics(1, 2, 3))
+
+    monkeypatch.setattr(desktop, "preview_verified_run", delayed)
+    try:
+        app._show_history(entries)
+        app.history_table.selection_set(name_a)
+        app._select_history()
+        app._preview_history()
+        pump(root, started.is_set)
+
+        app.history_table.selection_set(name_b)
+        app._select_history()
+        assert app.history_preview is None
+        release.set()
+        pump(root, lambda: app._active_kind is None)
+        assert app.history_preview is None
+        assert "VERIFIED" not in app.history_preview_status.get()
+
+        started.clear()
+        release.clear()
+        app.history_table.selection_set(name_a)
+        app._select_history()
+        app._preview_history()
+        pump(root, started.is_set)
+        app.path.set(str(tmp_path / "changed.csv"))
+        release.set()
+        pump(root, lambda: not app._pending_jobs)
+        root.update()
+        assert app.history_preview is None
+        assert app.imported is None
+    finally:
+        release.set()
+        close_desktop(root, app)
+
+
+def test_history_preview_failure_and_cancellation_clear_old_metrics(monkeypatch):
+    root, app = new_desktop()
+    name = "run-" + "a" * 32
+    entry = RunHistoryEntry(name, "VALID", "verified", "cost")
+    old_preview = RunHistoryPreview(
+        name, "cost", None, ComparisonMetrics(131.01, 247.02, 90))
+    cancelled = threading.Event()
+
+    try:
+        app._show_history([entry])
+        app.history_table.selection_set(name)
+        app._select_history()
+        app._show_history_preview(old_preview)
+
+        def fail_preview(*_args, **_kwargs):
+            raise DashboardError("synthetic preview failure")
+
+        monkeypatch.setattr(desktop, "preview_verified_run", fail_preview)
+        app._preview_history()
+        pump(root, lambda: app._active_kind is None)
+        assert app.history_preview is None
+        assert app.preview_table.item("cost_cny", "values")[1] == "—"
+        assert "预览失败" in app.status.get()
+
+        def wait_for_cancel(_imported, _name, _root, *, cancel_event):
+            assert cancel_event.wait(2)
+            cancelled.set()
+            raise DashboardError("synthetic cancelled preview")
+
+        monkeypatch.setattr(desktop, "preview_verified_run", wait_for_cancel)
+        app._preview_history()
+        pump(root, lambda: app._active_kind == "history_preview")
+        app._cancel_job()
+        pump(root, lambda: app._active_kind is None)
+        assert cancelled.is_set()
+        assert app.history_preview is None
+        assert app.preview_table.item("cost_cny", "values")[1] == "—"
+        assert app.status.get() == "已取消 / Cancelled"
     finally:
         close_desktop(root, app)
 

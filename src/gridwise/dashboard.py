@@ -18,6 +18,9 @@ SYNTHETIC_TEMPLATE = ROOT / "examples" / "synthetic-day.json"
 MAX_INTERACTIVE_PERIODS = 96
 MAX_HISTORY_ENTRIES = 50
 MAX_HISTORY_SCAN = 1000
+HISTORY_STATUSES = frozenset({"VALID", "INCOMPLETE", "DAMAGED"})
+HISTORY_MODES = frozenset({"cost", "peak_cap"})
+HISTORY_SORT_KEYS = frozenset({"name", "status", "optimization_mode", "peak_cap_kw"})
 
 
 class DashboardError(RuntimeError):
@@ -48,6 +51,44 @@ class RunHistoryEntry:
     peak_cap_kw: float | None = None
 
 
+def filter_run_history(entries, *, query: str = "", status: str | None = None,
+                       optimization_mode: str | None = None) -> list[RunHistoryEntry]:
+    """Filter one already-enumerated history snapshot without filesystem access."""
+    if status is not None and status not in HISTORY_STATUSES:
+        raise ValueError(f"unsupported history status: {status}")
+    if optimization_mode is not None and optimization_mode not in HISTORY_MODES:
+        raise ValueError(f"unsupported optimization mode: {optimization_mode}")
+    needle = str(query).strip().casefold()
+    return [
+        entry for entry in entries
+        if (not needle or needle in entry.name.casefold())
+        and (status is None or entry.status == status)
+        and (optimization_mode is None or entry.optimization_mode == optimization_mode)
+    ]
+
+
+def sort_run_history(entries, *, sort_key: str = "name",
+                     descending: bool = False) -> list[RunHistoryEntry]:
+    """Stably sort an in-memory history snapshot; missing peak caps stay last."""
+    if sort_key not in HISTORY_SORT_KEYS:
+        raise ValueError(f"unsupported history sort key: {sort_key}")
+    items = list(entries)
+    if sort_key == "peak_cap_kw":
+        present = [entry for entry in items if entry.peak_cap_kw is not None]
+        missing = [entry for entry in items if entry.peak_cap_kw is None]
+        present.sort(key=lambda entry: float(entry.peak_cap_kw), reverse=descending)
+        return present + missing
+    if sort_key == "name":
+        key = lambda entry: entry.name.casefold()
+    elif sort_key == "status":
+        order = {"VALID": 0, "INCOMPLETE": 1, "DAMAGED": 2}
+        key = lambda entry: order[entry.status]
+    else:
+        order = {"cost": 0, "peak_cap": 1, None: 2}
+        key = lambda entry: order[entry.optimization_mode]
+    return sorted(items, key=key, reverse=descending)
+
+
 @dataclass(frozen=True)
 class ComparisonMetrics:
     """The three independently recalculated metrics shown to the user."""
@@ -55,6 +96,22 @@ class ComparisonMetrics:
     cost_cny: float
     grid_energy_kwh: float
     peak_grid_kw: float
+
+
+@dataclass(frozen=True)
+class RunHistoryPreview:
+    """One safely reread historical result aligned with the current checked CSV."""
+
+    run_name: str
+    optimization_mode: str
+    peak_cap_kw: float | None
+    metrics: ComparisonMetrics
+    units: tuple[tuple[str, str], ...] = (
+        ("cost_cny", "CNY"),
+        ("grid_energy_kwh", "kWh"),
+        ("peak_grid_kw", "kW"),
+    )
+    integrity_status: str = "VERIFIED"
 
 
 @dataclass(frozen=True)
@@ -248,6 +305,33 @@ def list_run_history(runs_root: Path, *,
         return entries
     except OSError as exc:
         raise DashboardError(f"无法读取运行目录 / Cannot list runs root {root}: {exc}") from exc
+
+
+def preview_verified_run(imported: ImportResult, run_name: str,
+                         runs_root: Path, *,
+                         cancel_event: threading.Event | None = None) -> RunHistoryPreview:
+    """Safely reread one run and reuse the existing metric preparation path."""
+    if not imported.report.ready or not imported.records:
+        raise DashboardError("CSV quality check failed; history cannot be previewed")
+    if not RUN_NAME.fullmatch(run_name):
+        raise DashboardError(f"运行名称无效 / Invalid run name: {run_name}")
+    if cancel_event is not None and cancel_event.is_set():
+        raise DashboardError("history preview cancelled")
+    try:
+        verified = read_verified_run(Path(runs_root) / run_name)
+        if cancel_event is not None and cancel_event.is_set():
+            raise DashboardError("history preview cancelled")
+        chart = _chart_from_verified(imported, verified)
+        if cancel_event is not None and cancel_event.is_set():
+            raise DashboardError("history preview cancelled")
+        mode, cap = _policy_from_verified(verified)
+        return RunHistoryPreview(
+            run_name, mode, cap, _comparison_metrics(chart))
+    except DashboardError:
+        raise
+    except (RunArtifactError, DataError, OSError, ValueError, KeyError, TypeError) as exc:
+        raise DashboardError(
+            f"历史运行无法预览 / Historical run cannot be previewed: {exc}") from exc
 
 
 def load_verified_comparison(imported: ImportResult, run_name: str,

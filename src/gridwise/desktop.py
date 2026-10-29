@@ -18,8 +18,9 @@ except ImportError:  # Pure chart selection remains usable without a GUI runtime
 
 from .dashboard import (DashboardError, MAX_INTERACTIVE_PERIODS, ROOT,
                         compare_verified_runs, default_device_parameters,
-                        default_runs_root, list_run_history,
-                        load_verified_comparison, run_comparison)
+                        default_runs_root, filter_run_history, list_run_history,
+                        load_verified_comparison, preview_verified_run,
+                        run_comparison, sort_run_history)
 from .data import import_energy_csv, summarize_energy_input
 from .device import (DEVICE_FIELDS, DeviceParameterError, DeviceParameters,
                      parse_device_parameters)
@@ -40,6 +41,26 @@ BLUE = "#3675A8"
 GOLD = "#B07820"
 RED = "#AF453C"
 SAMPLE = ROOT / "examples" / "synthetic-day.csv"
+HISTORY_FILTER_ALL = "全部 / All"
+HISTORY_MODE_COST = "纯电费 / Cost-only"
+HISTORY_MODE_PEAK_CAP = "峰值上限 / Peak cap"
+HISTORY_STATUS_FILTERS = {
+    HISTORY_FILTER_ALL: None,
+    "VALID": "VALID",
+    "INCOMPLETE": "INCOMPLETE",
+    "DAMAGED": "DAMAGED",
+}
+HISTORY_MODE_FILTERS = {
+    HISTORY_FILTER_ALL: None,
+    HISTORY_MODE_COST: "cost",
+    HISTORY_MODE_PEAK_CAP: "peak_cap",
+}
+HISTORY_TABLE_COLUMNS = (
+    ("name", "运行标识 / Run ID", "name", 360),
+    ("status", "状态 / Status", "status", 120),
+    ("mode", "优化模式 / Mode", "optimization_mode", 175),
+    ("peak_cap", "峰值上限 / Peak cap", "peak_cap_kw", 125),
+)
 
 
 def _enable_windows_dpi_awareness():
@@ -192,6 +213,19 @@ class EnergyDesktop:
             "已保存的本地目录 / Saved local directory" if saved is not None else
             "临时目录；选择并保存可持久保留 / Temporary; choose and save for persistence"))
         self.selected_run = tk.StringVar()
+        self.history_search = tk.StringVar()
+        self.history_status_filter = tk.StringVar(value=HISTORY_FILTER_ALL)
+        self.history_mode_filter = tk.StringVar(value=HISTORY_FILTER_ALL)
+        self.history_filter_notice = tk.StringVar(value="尚未刷新 / Not refreshed")
+        self.history_selection_detail = tk.StringVar(
+            value="选择运行查看状态与详情 / Select a run to view status and details")
+        self._history_sort_key = "name"
+        self._history_sort_descending = False
+        self.history_preview = None
+        self.history_preview_status = tk.StringVar(
+            value="尚未预览 / No verified preview")
+        self.history_preview_context = tk.StringVar(
+            value="选择有效运行并主动预览 / Select a valid run and preview")
         self.selected_compare_a = tk.StringVar()
         self.selected_compare_b = tk.StringVar()
         self.comparison_status = tk.StringVar(
@@ -235,6 +269,9 @@ class EnergyDesktop:
         self.path.trace_add("write", self._invalidate)
         self.step.trace_add("write", self._invalidate)
         self.runs_root.trace_add("write", self._invalidate_root)
+        self.history_search.trace_add("write", self._history_filter_changed)
+        self.history_status_filter.trace_add("write", self._history_filter_changed)
+        self.history_mode_filter.trace_add("write", self._history_filter_changed)
         self.optimization_mode.trace_add("write", self._policy_changed)
         self.peak_cap.trace_add("write", self._policy_changed)
         for value in self.device_values.values():
@@ -438,40 +475,100 @@ class EnergyDesktop:
         self.refresh_button.grid(row=2, column=4, padx=(8, 0))
         ttk.Label(history, text="运行历史 / Run history (VALID / INCOMPLETE / DAMAGED)").grid(
             row=3, column=0, columnspan=5, sticky="w", pady=(6, 0))
-        self.history_combo = ttk.Combobox(history, textvariable=self.selected_run,
-                                          state="readonly", values=())
-        self.history_combo.grid(row=4, column=0, columnspan=4, sticky="ew", pady=5)
+        ttk.Label(history, text="搜索运行标识 / Search run ID").grid(
+            row=4, column=0, columnspan=3, sticky="w")
+        ttk.Label(history, text="状态 / Status").grid(row=4, column=3, sticky="w")
+        ttk.Label(history, text="优化模式 / Mode").grid(row=4, column=4, sticky="w")
+        self.history_search_entry = ttk.Entry(history, textvariable=self.history_search)
+        self.history_search_entry.grid(row=5, column=0, columnspan=3, sticky="ew", pady=5)
+        self.history_status_combo = ttk.Combobox(
+            history, textvariable=self.history_status_filter, state="readonly",
+            values=tuple(HISTORY_STATUS_FILTERS))
+        self.history_status_combo.grid(row=5, column=3, sticky="ew", padx=(8, 0), pady=5)
+        self.history_mode_combo = ttk.Combobox(
+            history, textvariable=self.history_mode_filter, state="readonly",
+            values=tuple(HISTORY_MODE_FILTERS))
+        self.history_mode_combo.grid(row=5, column=4, sticky="ew", padx=(8, 0), pady=5)
+        ttk.Label(history, textvariable=self.history_filter_notice, style="Sub.TLabel").grid(
+            row=6, column=0, columnspan=4, sticky="w")
+        self.clear_history_filters_button = ttk.Button(
+            history, text="清除筛选 / Clear filters", command=self._clear_history_filters)
+        self.clear_history_filters_button.grid(row=6, column=4, padx=(8, 0))
+        history_table_frame = ttk.Frame(history)
+        history_table_frame.grid(row=7, column=0, columnspan=4, sticky="nsew", pady=5)
+        self.history_table = ttk.Treeview(
+            history_table_frame, columns=tuple(column[0] for column in HISTORY_TABLE_COLUMNS),
+            show="headings", height=5, selectmode="browse", takefocus=1)
+        for column, heading, sort_key, width in HISTORY_TABLE_COLUMNS:
+            self.history_table.heading(
+                column, text=heading,
+                command=lambda key=sort_key: self._sort_history(key))
+            self.history_table.column(
+                column, width=width, minwidth=90,
+                anchor="w" if column in ("name", "mode") else "center")
+        self.history_table.pack(side="left", fill="both", expand=True)
+        history_scroll = ttk.Scrollbar(
+            history_table_frame, orient="vertical", command=self.history_table.yview)
+        history_scroll.pack(side="right", fill="y")
+        self.history_table.configure(yscrollcommand=history_scroll.set)
         self.load_button = ttk.Button(history, text="读取所选 / Load selected",
                                       command=self._load_history, state="disabled")
-        self.load_button.grid(row=4, column=4, padx=(8, 0))
+        self.load_button.grid(row=7, column=4, padx=(8, 0), sticky="n")
+        ttk.Label(
+            history, textvariable=self.history_selection_detail, style="Sub.TLabel",
+            wraplength=960).grid(row=8, column=0, columnspan=5, sticky="w", pady=(0, 4))
+        ttk.Label(history, text="历史运行指标预览 / Historical run metrics preview").grid(
+            row=9, column=0, columnspan=4, sticky="w", pady=(8, 2))
+        self.preview_button = ttk.Button(
+            history, text="预览指标 / Preview Metrics",
+            command=self._preview_history, state="disabled")
+        self.preview_button.grid(row=9, column=4, padx=(8, 0))
+        ttk.Label(history, textvariable=self.history_preview_status, style="Sub.TLabel").grid(
+            row=10, column=0, columnspan=5, sticky="w")
+        ttk.Label(
+            history, textvariable=self.history_preview_context, style="Sub.TLabel",
+            wraplength=960).grid(row=11, column=0, columnspan=5, sticky="w", pady=(2, 4))
+        self.preview_table = ttk.Treeview(
+            history, columns=("metric", "value"), show="headings", height=3,
+            selectmode="none", takefocus=1)
+        self.preview_table.heading("metric", text="指标 / Metric")
+        self.preview_table.heading("value", text="值 / Value")
+        self.preview_table.column("metric", width=260, minwidth=170, anchor="w")
+        self.preview_table.column("value", width=220, minwidth=120, anchor="e")
+        for key, label in (("cost_cny", "电费 / Cost"),
+                           ("grid_energy_kwh", "购电量 / Grid energy"),
+                           ("peak_grid_kw", "峰值购电功率 / Grid peak")):
+            self.preview_table.insert("", "end", iid=key, values=(label, "—"))
+        self.preview_table.grid(row=12, column=0, columnspan=5, sticky="ew")
         history.columnconfigure(0, weight=1)
         history.columnconfigure(1, weight=1)
         history.columnconfigure(2, weight=1)
-        self.history_combo.bind("<<ComboboxSelected>>", self._select_history)
+        history.columnconfigure(3, weight=1)
+        self.history_table.bind("<<TreeviewSelect>>", self._select_history)
 
         ttk.Label(history, text="历史运行公平对比 / Fair historical comparison").grid(
-            row=5, column=0, columnspan=5, sticky="w", pady=(10, 2))
-        ttk.Label(history, text="运行 A / Run A").grid(row=6, column=0, columnspan=2,
+            row=13, column=0, columnspan=5, sticky="w", pady=(10, 2))
+        ttk.Label(history, text="运行 A / Run A").grid(row=14, column=0, columnspan=2,
                                                        sticky="w")
-        ttk.Label(history, text="运行 B / Run B").grid(row=6, column=2, columnspan=2,
+        ttk.Label(history, text="运行 B / Run B").grid(row=14, column=2, columnspan=2,
                                                        sticky="w", padx=(8, 0))
         self.compare_a_combo = ttk.Combobox(
             history, textvariable=self.selected_compare_a, state="readonly", values=())
-        self.compare_a_combo.grid(row=7, column=0, columnspan=2, sticky="ew", pady=5)
+        self.compare_a_combo.grid(row=15, column=0, columnspan=2, sticky="ew", pady=5)
         self.compare_b_combo = ttk.Combobox(
             history, textvariable=self.selected_compare_b, state="readonly", values=())
-        self.compare_b_combo.grid(row=7, column=2, columnspan=2, sticky="ew",
+        self.compare_b_combo.grid(row=15, column=2, columnspan=2, sticky="ew",
                                   padx=(8, 0), pady=5)
         self.compare_button = ttk.Button(
             history, text="公平对比 / Compare", command=self._compare_history,
             state="disabled")
-        self.compare_button.grid(row=7, column=4, padx=(8, 0))
+        self.compare_button.grid(row=15, column=4, padx=(8, 0))
         self.compare_a_combo.bind("<<ComboboxSelected>>", self._comparison_selection_changed)
         self.compare_b_combo.bind("<<ComboboxSelected>>", self._comparison_selection_changed)
         ttk.Label(history, textvariable=self.comparison_status, style="Sub.TLabel",
-                  wraplength=960).grid(row=8, column=0, columnspan=5, sticky="w")
+                  wraplength=960).grid(row=16, column=0, columnspan=5, sticky="w")
         ttk.Label(history, textvariable=self.comparison_context, style="Sub.TLabel",
-                  wraplength=960).grid(row=9, column=0, columnspan=5, sticky="w",
+                  wraplength=960).grid(row=17, column=0, columnspan=5, sticky="w",
                                        pady=(2, 5))
         columns = ("metric", "run_a", "run_b", "delta")
         self.comparison_table = ttk.Treeview(
@@ -490,9 +587,9 @@ class EnergyDesktop:
                            ("peak_grid_kw", "购电峰值 / Grid peak")):
             self.comparison_table.insert("", "end", iid=key,
                                          values=(label, "—", "—", "—"))
-        self.comparison_table.grid(row=10, column=0, columnspan=5, sticky="ew")
+        self.comparison_table.grid(row=18, column=0, columnspan=5, sticky="ew")
         report_actions = ttk.Frame(history)
-        report_actions.grid(row=11, column=0, columnspan=5, sticky="w", pady=(8, 0))
+        report_actions.grid(row=19, column=0, columnspan=5, sticky="w", pady=(8, 0))
         self.export_run_button = ttk.Button(
             report_actions, text="导出所选运行报告 / Export selected run",
             command=self._export_selected_run, state="disabled")
@@ -711,6 +808,17 @@ class EnergyDesktop:
         for canvas, specification in self.chart_canvases:
             self._draw(canvas, specification)
 
+    def _clear_history_preview(self):
+        self.history_preview = None
+        self.history_preview_status.set("尚未预览 / No verified preview")
+        self.history_preview_context.set(
+            "选择有效运行并主动预览 / Select a valid run and preview")
+        for key, label in (("cost_cny", "电费 / Cost"),
+                           ("grid_energy_kwh", "购电量 / Grid energy"),
+                           ("peak_grid_kw", "峰值购电功率 / Grid peak")):
+            self.preview_table.item(key, values=(label, "—"))
+        self.preview_button.configure(state="disabled")
+
     def _clear_history_comparison(self, *, clear_selection=True):
         self.history_comparison = None
         self.comparison_status.set("尚未比较 / No verified comparison yet")
@@ -729,6 +837,7 @@ class EnergyDesktop:
         if self._closing:
             return
         self._clear_diagnostic()
+        self._clear_history_preview()
         if self._cancel is not None:
             self._cancel.set()
         self._stop_progress()
@@ -754,15 +863,16 @@ class EnergyDesktop:
     def _invalidate_root(self, *_):
         self._invalidate()
         self.storage_notice.set("目录未保存 / Directory not saved")
-        self.history_combo.configure(values=())
         self.compare_a_combo.configure(values=())
         self.compare_b_combo.configure(values=())
         self._history_entries.clear()
+        self._apply_history_filters()
 
     def _policy_changed(self, *_):
         if self._updating_policy or self._closing:
             return
         self._clear_diagnostic()
+        self._clear_history_preview()
         if self._cancel is not None:
             self._cancel.set()
         self._generation += 1
@@ -786,6 +896,7 @@ class EnergyDesktop:
         if self._updating_devices or self._closing:
             return
         self._clear_diagnostic()
+        self._clear_history_preview()
         if self._cancel is not None:
             self._cancel.set()
         self._generation += 1
@@ -865,6 +976,7 @@ class EnergyDesktop:
 
     def _start_job(self, kind, operation):
         self._clear_diagnostic()
+        self._clear_history_preview()
         self._generation += 1
         generation = self._generation
         self._pending_jobs.add(generation)
@@ -879,6 +991,7 @@ class EnergyDesktop:
         self.check_button.configure(state="disabled")
         self.refresh_button.configure(state="disabled")
         self.load_button.configure(state="disabled")
+        self.preview_button.configure(state="disabled")
         self.compare_button.configure(state="disabled")
         self.export_run_button.configure(state="disabled")
         self.export_comparison_button.configure(state="disabled")
@@ -927,7 +1040,9 @@ class EnergyDesktop:
             self.save_root_button.configure(state="normal")
             self.cancel_button.configure(state="disabled")
             if cancelled:
-                if kind == "history_compare":
+                if kind == "history_preview":
+                    self._clear_history_preview()
+                elif kind == "history_compare":
                     self._clear_history_comparison(clear_selection=False)
                 elif kind not in ("report_single", "report_compare"):
                     self._clear_results()
@@ -945,6 +1060,8 @@ class EnergyDesktop:
                         self._show_history(value)
                     elif kind == "history_compare":
                         self._show_history_comparison(value)
+                    elif kind == "history_preview":
+                        self._show_history_preview(value)
                     elif kind in ("report_single", "report_compare"):
                         self._show_report_export(value)
                     else:
@@ -988,6 +1105,11 @@ class EnergyDesktop:
             self.status.set("历史对比失败；详见日志 / History comparison failed; see log")
             self._append_log(f"{type(error).__name__}: {error}")
             return
+        if kind == "history_preview":
+            self._clear_history_preview()
+            self.status.set("指标预览失败；详见日志 / Metrics preview failed; see log")
+            self._append_log(f"{type(error).__name__}: {error}")
+            return
         self._clear_results()
         self.selected_run.set("")
         self.export_run_button.configure(state="disabled")
@@ -1021,6 +1143,7 @@ class EnergyDesktop:
             self.run_button.configure(state="disabled")
             self.refresh_button.configure(state="disabled")
             self.load_button.configure(state="disabled")
+            self.preview_button.configure(state="disabled")
             self.compare_button.configure(state="disabled")
             self.export_run_button.configure(state="disabled")
             self.export_comparison_button.configure(state="disabled")
@@ -1064,6 +1187,76 @@ class EnergyDesktop:
         self.storage_notice.set("已保存的本地目录 / Saved local directory")
         self.status.set("运行目录已保存 / Runs root saved")
 
+    def _history_filter_changed(self, *_):
+        if not self._closing:
+            self._apply_history_filters()
+
+    def _apply_history_filters(self):
+        entries = filter_run_history(
+            self._history_entries.values(),
+            query=self.history_search.get(),
+            status=HISTORY_STATUS_FILTERS[self.history_status_filter.get()],
+            optimization_mode=HISTORY_MODE_FILTERS[self.history_mode_filter.get()],
+        )
+        entries = sort_run_history(
+            entries, sort_key=self._history_sort_key,
+            descending=self._history_sort_descending)
+        selected_name = self._selected_history_name(self.selected_run.get())
+        self.history_table.delete(*self.history_table.get_children())
+        for entry in entries:
+            self.history_table.insert(
+                "", "end", iid=entry.name, values=self._history_row(entry))
+        visible_names = {entry.name for entry in entries}
+        if selected_name in visible_names:
+            self.history_table.selection_set(selected_name)
+            self.history_table.see(selected_name)
+        else:
+            self.selected_run.set("")
+            self.history_selection_detail.set(
+                "选择运行查看状态与详情 / Select a run to view status and details")
+        self._update_history_headings()
+        total = len(self._history_entries)
+        if entries:
+            self.history_filter_notice.set(
+                f"显示 {len(entries)} / {total} 条运行 / Showing {len(entries)} of {total} runs")
+        elif total:
+            self.history_filter_notice.set("没有匹配运行 / No matching runs")
+        else:
+            self.history_filter_notice.set("没有运行记录 / No runs found")
+        self._select_history()
+
+    def _sort_history(self, sort_key):
+        if sort_key == self._history_sort_key:
+            self._history_sort_descending = not self._history_sort_descending
+        else:
+            self._history_sort_key = sort_key
+            self._history_sort_descending = False
+        self._apply_history_filters()
+
+    def _update_history_headings(self):
+        for column, heading, sort_key, _width in HISTORY_TABLE_COLUMNS:
+            indicator = ""
+            if sort_key == self._history_sort_key:
+                indicator = " ▼" if self._history_sort_descending else " ▲"
+            self.history_table.heading(column, text=heading + indicator)
+
+    @staticmethod
+    def _history_row(entry):
+        if entry.optimization_mode == "cost":
+            mode = HISTORY_MODE_COST
+        elif entry.optimization_mode == "peak_cap":
+            mode = HISTORY_MODE_PEAK_CAP
+        else:
+            mode = "未知 / Unknown"
+        cap = f"{entry.peak_cap_kw:g} kW" if entry.peak_cap_kw is not None else "—"
+        return entry.name, entry.status, mode, cap
+
+    def _clear_history_filters(self):
+        self.history_search.set("")
+        self.history_status_filter.set(HISTORY_FILTER_ALL)
+        self.history_mode_filter.set(HISTORY_FILTER_ALL)
+        self._apply_history_filters()
+
     def _refresh_history(self):
         if self._closing or self._active_kind is not None:
             return
@@ -1074,11 +1267,10 @@ class EnergyDesktop:
     def _show_history(self, entries):
         self._history_entries = {entry.name: entry for entry in entries}
         labels = tuple(self._history_label(entry) for entry in entries)
-        self.history_combo.configure(values=labels)
         self.compare_a_combo.configure(values=labels)
         self.compare_b_combo.configure(values=labels)
         self.selected_run.set("")
-        self.load_button.configure(state="disabled")
+        self._apply_history_filters()
         self._clear_history_comparison()
         counts = {status: sum(entry.status == status for entry in entries)
                   for status in ("VALID", "INCOMPLETE", "DAMAGED")}
@@ -1089,16 +1281,83 @@ class EnergyDesktop:
                 self._append_log(f"{entry.name} [{entry.status}]: {entry.detail}")
 
     def _select_history(self, _event=None):
-        selected = self.selected_run.get()
-        name = selected.split(" [", 1)[0] if " [" in selected else ""
+        table_selection = self.history_table.selection()
+        if table_selection:
+            name = table_selection[0]
+            table_entry = self._history_entries.get(name)
+            if table_entry is not None:
+                self.selected_run.set(self._history_label(table_entry))
+        else:
+            selected = self.selected_run.get()
+            name = selected.split(" [", 1)[0] if " [" in selected else ""
         entry = self._history_entries.get(name)
+        if self.history_preview is not None and self.history_preview.run_name != name:
+            self._clear_history_preview()
+        if entry is None:
+            self.history_selection_detail.set(
+                "选择运行查看状态与详情 / Select a run to view status and details")
+        elif entry.status == "VALID":
+            self.history_selection_detail.set(
+                f"{entry.name} [VALID]：完整性校验通过 / Integrity verified")
+        else:
+            self._clear_history_preview()
+            self.history_selection_detail.set(
+                f"{entry.name} [{entry.status}]: {entry.detail}")
         available = (not self._closing and self._active_kind is None and
                      self.imported is not None and self.imported.report.ready and
-                     name in self._history_entries)
+                      entry is not None and entry.status == "VALID")
         self.load_button.configure(state="normal" if available else "disabled")
-        export_available = available and entry is not None and entry.status == "VALID"
+        self.preview_button.configure(state="normal" if available else "disabled")
+        export_available = available
         self.export_run_button.configure(
             state="normal" if export_available else "disabled")
+
+    def _preview_history(self):
+        if self._closing or self._active_kind is not None:
+            return
+        name = self._selected_history_name(self.selected_run.get())
+        entry = self._history_entries.get(name)
+        if self.imported is None or not self.imported.report.ready or \
+                entry is None or entry.status != "VALID":
+            self._clear_history_preview()
+            self.status.set(
+                "请选择有效运行并检查当前输入 / Select a valid run and check current input")
+            return
+        imported = self.imported
+        runs_root = Path(self.runs_root.get())
+        self._start_job("history_preview", lambda cancel: preview_verified_run(
+            imported, name, runs_root, cancel_event=cancel))
+        self.history_preview_status.set("正在核验并重算指标 / Verifying and recalculating metrics…")
+        self.status.set("正在预览历史指标 / Previewing historical metrics…")
+
+    def _show_history_preview(self, preview):
+        name = self._selected_history_name(self.selected_run.get())
+        entry = self._history_entries.get(name)
+        if preview.run_name != name or entry is None or entry.status != "VALID":
+            return
+        units = dict(preview.units)
+        values = {
+            "cost_cny": preview.metrics.cost_cny,
+            "grid_energy_kwh": preview.metrics.grid_energy_kwh,
+            "peak_grid_kw": preview.metrics.peak_grid_kw,
+        }
+        labels = {
+            "cost_cny": "电费 / Cost",
+            "grid_energy_kwh": "购电量 / Grid energy",
+            "peak_grid_kw": "峰值购电功率 / Grid peak",
+        }
+        for key in ("cost_cny", "grid_energy_kwh", "peak_grid_kw"):
+            self.preview_table.item(
+                key, values=(labels[key], f"{values[key]:,.2f} {units[key]}"))
+        mode = (HISTORY_MODE_PEAK_CAP if preview.optimization_mode == "peak_cap"
+                else HISTORY_MODE_COST)
+        cap = f"{preview.peak_cap_kw:g} kW" if preview.peak_cap_kw is not None else "—"
+        self.history_preview = preview
+        self.history_preview_status.set(
+            f"完整性 / Integrity: {preview.integrity_status}；当前 CSV 已对齐 / Input aligned")
+        self.history_preview_context.set(
+            f"模式 / Mode: {mode}  |  峰值上限 / Peak cap: {cap}")
+        self.status.set("历史指标预览完成 / Historical metrics preview ready")
 
     @staticmethod
     def _selected_history_name(value):
@@ -1358,12 +1617,11 @@ class EnergyDesktop:
             self._history_entries[result.run_name] = RunHistoryEntry(
                 result.run_name, "VALID", "verified",
                 result.optimization_mode, result.peak_cap_kw)
-            self.history_combo.configure(values=tuple(
-                self._history_label(entry) for entry in self._history_entries.values()))
             labels = tuple(self._history_label(entry) for entry in self._history_entries.values())
             self.compare_a_combo.configure(values=labels)
             self.compare_b_combo.configure(values=labels)
             self.selected_run.set(self._history_label(self._history_entries[result.run_name]))
+            self._apply_history_filters()
         for key, pair in self.metric_labels.items():
             optimized = self.chart["metrics"]["optimized"][key]
             baseline = self.chart["metrics"]["baseline"][key]

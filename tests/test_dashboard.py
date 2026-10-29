@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import threading
+from dataclasses import FrozenInstanceError
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -532,6 +533,72 @@ def test_history_rejects_incomplete_and_other_input(tmp_path):
         dashboard.load_verified_comparison(other, first.run_name, tmp_path)
 
 
+def test_preview_verified_run_uses_safe_reader_and_recalculated_metrics(tmp_path, monkeypatch):
+    imported = import_energy_csv(SAMPLE, 1)
+    result = dashboard.run_comparison(imported, runs_root=tmp_path, peak_cap_kw=55)
+    real_read = dashboard.read_verified_run
+    real_prepare = dashboard.prepare_visualization_data
+    calls = []
+
+    def read(directory):
+        calls.append(("read", Path(directory).name))
+        return real_read(directory)
+
+    def prepare(checked_input, summary):
+        calls.append(("prepare", len(checked_input.records)))
+        return real_prepare(checked_input, summary)
+
+    monkeypatch.setattr(dashboard, "read_verified_run", read)
+    monkeypatch.setattr(dashboard, "prepare_visualization_data", prepare)
+    monkeypatch.setattr(
+        dashboard, "publish_run",
+        lambda *_args, **_kwargs: pytest.fail("preview must not publish artifacts"))
+
+    preview = dashboard.preview_verified_run(imported, result.run_name, tmp_path)
+
+    assert calls == [("read", result.run_name), ("prepare", len(imported.records))]
+    assert preview.run_name == result.run_name
+    assert preview.optimization_mode == "peak_cap"
+    assert preview.peak_cap_kw == 55
+    assert preview.metrics == dashboard.ComparisonMetrics(
+        result.chart["metrics"]["optimized"]["cost_cny"],
+        result.chart["metrics"]["optimized"]["grid_energy_kwh"],
+        result.chart["metrics"]["optimized"]["peak_grid_kw"],
+    )
+    assert dict(preview.units) == {
+        "cost_cny": "CNY", "grid_energy_kwh": "kWh", "peak_grid_kw": "kW"}
+    assert preview.integrity_status == "VERIFIED"
+    with pytest.raises(FrozenInstanceError):
+        preview.optimization_mode = "cost"
+
+
+def test_preview_verified_run_fails_closed_for_mismatch_damage_and_cancellation(
+        tmp_path, monkeypatch):
+    imported = import_energy_csv(SAMPLE, 1)
+    result = dashboard.run_comparison(imported, runs_root=tmp_path)
+    different = tmp_path / "different.csv"
+    different.write_text(
+        HEADER + "2026-01-01T00:00:00+00:00,1,0,0.5\n", encoding="utf-8")
+    other = import_energy_csv(different, 1)
+
+    with pytest.raises(dashboard.DashboardError, match="row count mismatch"):
+        dashboard.preview_verified_run(other, result.run_name, tmp_path)
+
+    summary = tmp_path / result.run_name / "summary.json"
+    summary.write_bytes(summary.read_bytes() + b"tampered")
+    with pytest.raises(dashboard.DashboardError, match="size or SHA-256 mismatch"):
+        dashboard.preview_verified_run(imported, result.run_name, tmp_path)
+
+    cancelled = threading.Event()
+    cancelled.set()
+    monkeypatch.setattr(
+        dashboard, "read_verified_run",
+        lambda _path: pytest.fail("cancelled preview must not read files"))
+    with pytest.raises(dashboard.DashboardError, match="cancelled"):
+        dashboard.preview_verified_run(
+            imported, "run-" + "0" * 32, tmp_path, cancel_event=cancelled)
+
+
 def test_two_runs_keep_separate_verified_metrics(tmp_path):
     imported = import_energy_csv(SAMPLE, 1)
     first = dashboard.run_comparison(imported, runs_root=tmp_path)
@@ -581,6 +648,120 @@ def test_history_missing_root_is_empty_but_unreadable_root_fails(tmp_path, monke
     monkeypatch.setattr(Path, "iterdir", deny)
     with pytest.raises(dashboard.DashboardError, match="Cannot list runs root.*synthetic read denial"):
         dashboard.list_run_history(root)
+
+
+def test_history_query_filters_identifier_case_and_whitespace_without_reordering():
+    entries = [
+        dashboard.RunHistoryEntry("run-" + "a" * 32, "VALID", "verified", "cost"),
+        dashboard.RunHistoryEntry("run-" + "b" * 32, "VALID", "verified", "peak_cap", 55),
+        dashboard.RunHistoryEntry("run-" + "c" * 32, "INCOMPLETE", "missing marker"),
+    ]
+
+    assert dashboard.filter_run_history(entries, query="   ") == entries
+    assert dashboard.filter_run_history(entries, query="  RUN-" + "A" * 8) == entries[:1]
+    assert dashboard.filter_run_history(entries, query="does-not-exist") == []
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        (None, {"VALID", "INCOMPLETE", "DAMAGED"}),
+        ("VALID", {"VALID"}),
+        ("INCOMPLETE", {"INCOMPLETE"}),
+        ("DAMAGED", {"DAMAGED"}),
+    ],
+)
+def test_history_query_filters_all_supported_statuses(status, expected):
+    entries = [
+        dashboard.RunHistoryEntry("run-" + "a" * 32, "VALID", "verified", "cost"),
+        dashboard.RunHistoryEntry("run-" + "b" * 32, "INCOMPLETE", "missing marker"),
+        dashboard.RunHistoryEntry("run-" + "c" * 32, "DAMAGED", "hash mismatch"),
+    ]
+
+    filtered = dashboard.filter_run_history(entries, status=status)
+
+    assert {entry.status for entry in filtered} == expected
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_names"),
+    [
+        (None, {"run-" + "a" * 32, "run-" + "b" * 32, "run-" + "c" * 32}),
+        ("cost", {"run-" + "a" * 32}),
+        ("peak_cap", {"run-" + "b" * 32}),
+    ],
+)
+def test_history_query_filters_supported_optimization_modes(mode, expected_names):
+    entries = [
+        dashboard.RunHistoryEntry("run-" + "a" * 32, "VALID", "verified", "cost"),
+        dashboard.RunHistoryEntry("run-" + "b" * 32, "VALID", "verified", "peak_cap", 55),
+        dashboard.RunHistoryEntry("run-" + "c" * 32, "DAMAGED", "hash mismatch"),
+    ]
+
+    filtered = dashboard.filter_run_history(entries, optimization_mode=mode)
+
+    assert {entry.name for entry in filtered} == expected_names
+
+
+def test_history_query_combines_identifier_status_and_mode():
+    matching = dashboard.RunHistoryEntry(
+        "run-" + "ab" * 16, "VALID", "verified", "peak_cap", 55)
+    entries = [
+        dashboard.RunHistoryEntry("run-" + "aa" * 16, "VALID", "verified", "cost"),
+        matching,
+        dashboard.RunHistoryEntry("run-" + "ab" * 15 + "ac", "DAMAGED", "hash mismatch"),
+    ]
+
+    assert dashboard.filter_run_history(
+        entries, query="ABAB", status="VALID", optimization_mode="peak_cap") == [matching]
+
+
+def test_history_sort_supports_name_status_and_mode_with_stable_ties():
+    cost_b = dashboard.RunHistoryEntry(
+        "run-" + "b" * 32, "VALID", "verified", "cost")
+    cost_a = dashboard.RunHistoryEntry(
+        "run-" + "a" * 32, "VALID", "verified", "cost")
+    peak = dashboard.RunHistoryEntry(
+        "run-" + "c" * 32, "VALID", "verified", "peak_cap", 55)
+    incomplete = dashboard.RunHistoryEntry(
+        "run-" + "d" * 32, "INCOMPLETE", "missing marker")
+    damaged = dashboard.RunHistoryEntry(
+        "run-" + "e" * 32, "DAMAGED", "hash mismatch")
+    entries = [cost_b, peak, incomplete, cost_a, damaged]
+
+    assert dashboard.sort_run_history(entries, sort_key="name") == [
+        cost_a, cost_b, peak, incomplete, damaged]
+    assert dashboard.sort_run_history(entries, sort_key="name", descending=True) == [
+        damaged, incomplete, peak, cost_b, cost_a]
+    assert dashboard.sort_run_history(entries, sort_key="status") == [
+        cost_b, peak, cost_a, incomplete, damaged]
+    assert dashboard.sort_run_history(entries, sort_key="status", descending=True) == [
+        damaged, incomplete, cost_b, peak, cost_a]
+    assert dashboard.sort_run_history(entries, sort_key="optimization_mode") == [
+        cost_b, cost_a, peak, incomplete, damaged]
+    assert dashboard.sort_run_history(
+        entries, sort_key="optimization_mode", descending=True) == [
+            incomplete, damaged, peak, cost_b, cost_a]
+
+
+def test_history_sort_peak_cap_is_numeric_and_missing_values_always_last():
+    missing_cost = dashboard.RunHistoryEntry(
+        "run-" + "a" * 32, "VALID", "verified", "cost")
+    cap_60_first = dashboard.RunHistoryEntry(
+        "run-" + "b" * 32, "VALID", "verified", "peak_cap", 60)
+    cap_40 = dashboard.RunHistoryEntry(
+        "run-" + "c" * 32, "VALID", "verified", "peak_cap", 40)
+    cap_60_second = dashboard.RunHistoryEntry(
+        "run-" + "d" * 32, "VALID", "verified", "peak_cap", 60)
+    missing_damaged = dashboard.RunHistoryEntry(
+        "run-" + "e" * 32, "DAMAGED", "hash mismatch")
+    entries = [missing_cost, cap_60_first, cap_40, cap_60_second, missing_damaged]
+
+    assert dashboard.sort_run_history(entries, sort_key="peak_cap_kw") == [
+        cap_40, cap_60_first, cap_60_second, missing_cost, missing_damaged]
+    assert dashboard.sort_run_history(
+        entries, sort_key="peak_cap_kw", descending=True) == [
+            cap_60_first, cap_60_second, cap_40, missing_cost, missing_damaged]
 
 
 def test_unwritable_runs_root_blocks_publication_and_chart(tmp_path, monkeypatch):
