@@ -192,8 +192,8 @@ def _axis_number(value: float) -> str:
 
 def _render_svg(chart_id: str, title: str, unit: str, timestamps: tuple[str, ...],
                 series: tuple[tuple[str, str, str, tuple[float, ...]], ...]) -> str:
-    width, height = 900, 300
-    left, right, top, bottom = 68.0, 880.0, 46.0, 246.0
+    width, height = 900, 320
+    left, right, top, bottom = 92.0, 880.0, 72.0, 266.0
     values = [value for _key, _label, _color, items in series for value in items]
     lower, upper = min(0.0, min(values)), max(0.0, max(values))
     if math.isclose(lower, upper, rel_tol=0, abs_tol=1e-12):
@@ -264,8 +264,8 @@ def _render_svg(chart_id: str, title: str, unit: str, timestamps: tuple[str, ...
 <line x1="{left:.2f}" y1="{top:.2f}" x2="{left:.2f}" y2="{bottom:.2f}" class="chart-axis"/>
 <line x1="{left:.2f}" y1="{bottom:.2f}" x2="{right:.2f}" y2="{bottom:.2f}" class="chart-axis"/>
 {''.join(period_ticks)}
-<text x="18" y="49" class="axis-title">{escape(unit)}</text>
-<text x="{(left + right) / 2:.2f}" y="292" class="axis-title" text-anchor="middle">时段 / Period</text>
+<text x="20" y="53" class="axis-title">{escape(unit)}</text>
+<text x="{(left + right) / 2:.2f}" y="312" class="axis-title" text-anchor="middle">时段 / Period</text>
 {''.join(legends)}
 {''.join(paths)}
 </svg></div></figure>"""
@@ -337,8 +337,8 @@ h1 {{margin:0 0 8px;font-size:30px;line-height:1.2}} h2 {{margin:30px 0 12px;fon
 .status {{display:inline-block;border:1px solid var(--teal);color:var(--teal);font-weight:700;padding:5px 10px;margin:8px 8px 0 0}}
 .metrics {{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:14px}} .metric {{background:var(--white);border-top:4px solid var(--teal);padding:16px}}
 .metric span,.metric small {{display:block;color:var(--muted)}} .metric strong {{display:block;font-size:27px;margin-top:8px}} table {{width:100%;border-collapse:collapse;background:var(--white)}} th,td {{padding:10px 12px;border-bottom:1px solid var(--line);text-align:left}} th {{font-weight:600}} td {{text-align:right}} .delta {{color:var(--gold);font-weight:700}}
-.charts {{display:grid;gap:16px}} .chart {{margin:0;background:var(--white);border:1px solid var(--line)}} .chart figcaption {{padding:12px 16px 0;font-weight:700}}
-.chart-viewport {{overflow-x:auto}} .timeseries {{display:block;width:100%;min-width:680px;height:auto;min-height:220px}} .chart-paper {{fill:var(--white)}} .chart-grid {{stroke:#e3eaec;stroke-width:1}} .chart-axis {{stroke:#8ca2ad;stroke-width:1.2}}
+.charts {{display:grid;min-width:0;gap:16px}} .chart {{min-width:0;margin:0;background:var(--white);border:1px solid var(--line)}} .chart figcaption {{padding:12px 16px 0;font-weight:700}}
+.chart-viewport {{width:100%;max-width:100%;min-width:0;overflow-x:auto}} .timeseries {{display:block;width:100%;min-width:680px;height:auto;min-height:220px}} .chart-paper {{fill:var(--white)}} .chart-grid {{stroke:#e3eaec;stroke-width:1}} .chart-axis {{stroke:#8ca2ad;stroke-width:1.2}}
 .axis-label {{fill:var(--muted);font-size:12px}} .axis-title,.legend-label {{fill:var(--ink);font-size:13px}} .legend-label {{font-weight:600}}
 .notice {{border-left:4px solid var(--gold);background:#fffaf0;padding:12px 16px}} code {{font-family:Consolas,monospace;font-size:.92em}} footer {{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);color:var(--muted)}}
 @media (max-width:720px) {{.metrics {{grid-template-columns:1fr}} main {{padding:24px 16px}} table {{font-size:13px}} th,td {{padding:8px}} .timeseries {{min-height:180px}}}}

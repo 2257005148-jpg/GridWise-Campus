@@ -156,7 +156,91 @@ def test_report_svg_compacts_extreme_axis_labels_and_preserves_narrow_readabilit
     assert '>1.00e+12</text>' in html
     assert '>1.00e-7</text>' in html
     assert '<div class="chart-viewport"><svg class="timeseries"' in html
-    assert ".chart-viewport {overflow-x:auto}" in html
+    assert (".chart-viewport {width:100%;max-width:100%;min-width:0;"
+            "overflow-x:auto}") in html
+    assert ".timeseries {display:block;width:100%;min-width:680px" in html
+
+
+def test_report_svg_separates_legend_unit_and_highest_axis_tick(tmp_path, monkeypatch):
+    imported = import_energy_csv(SAMPLE, 1)
+    run_name = "run-" + "3" * 32
+    devices = DeviceParameters(120, 80, 40, 40, 30, 30, 0.95, 0.95)
+    timestamps = [record.timestamp for record in imported.records]
+    count = len(timestamps)
+    chart = {
+        "timestamps": timestamps,
+        "series": {
+            "optimized_grid_kw": [90.0] * count,
+            "baseline_grid_kw": [60.0] * count,
+            "optimized_cumulative_cost_cny": [131.01] * count,
+            "baseline_cumulative_cost_cny": [162.5] * count,
+            "optimized_soc_kwh": [30.0] * count,
+        },
+        "metrics": {
+            "optimized": {"cost_cny": 131.01, "grid_energy_kwh": 247.02,
+                          "peak_grid_kw": 90},
+            "baseline": {"cost_cny": 162.5, "grid_energy_kwh": 240,
+                         "peak_grid_kw": 60},
+        },
+        "delta_optimized_minus_baseline": {
+            "cost_cny": -31.49, "grid_energy_kwh": 7.02, "peak_grid_kw": 30},
+    }
+    monkeypatch.setattr(
+        reports, "load_verified_comparison",
+        lambda *_args, **_kwargs: dashboard.DashboardResult(
+            chart, "VERIFIED", run_name, "cost", None, None, devices))
+
+    html = reports.build_single_run_html(
+        imported, run_name, tmp_path, generated_at=GENERATED_AT).decode("utf-8")
+    svg = ET.fromstring(re.findall(r"<svg\b.*?</svg>", html, flags=re.DOTALL)[0])
+    legend_y = float(next(node for node in svg.findall("text")
+                          if node.attrib.get("class") == "legend-label").attrib["y"])
+    unit_y = float(next(node for node in svg.findall("text")
+                        if node.attrib.get("class") == "axis-title").attrib["y"])
+    highest_tick_y = min(float(node.attrib["y"]) for node in svg.findall("text")
+                         if node.attrib.get("class") == "axis-label")
+
+    assert unit_y - legend_y >= 20
+    assert highest_tick_y - unit_y >= 18
+
+
+def test_report_chart_scroll_is_contained_without_page_width_expansion(
+        tmp_path, monkeypatch):
+    imported = import_energy_csv(SAMPLE, 1)
+    run_name = "run-" + "4" * 32
+    devices = DeviceParameters(120, 80, 40, 40, 30, 30, 0.95, 0.95)
+    timestamps = [record.timestamp for record in imported.records]
+    count = len(timestamps)
+    chart = {
+        "timestamps": timestamps,
+        "series": {
+            "optimized_grid_kw": [10.0] * count,
+            "baseline_grid_kw": [12.0] * count,
+            "optimized_cumulative_cost_cny": [20.0] * count,
+            "baseline_cumulative_cost_cny": [22.0] * count,
+            "optimized_soc_kwh": [30.0] * count,
+        },
+        "metrics": {
+            "optimized": {"cost_cny": 20, "grid_energy_kwh": 60,
+                          "peak_grid_kw": 10},
+            "baseline": {"cost_cny": 22, "grid_energy_kwh": 72,
+                         "peak_grid_kw": 12},
+        },
+        "delta_optimized_minus_baseline": {
+            "cost_cny": -2, "grid_energy_kwh": -12, "peak_grid_kw": -2},
+    }
+    monkeypatch.setattr(
+        reports, "load_verified_comparison",
+        lambda *_args, **_kwargs: dashboard.DashboardResult(
+            chart, "VERIFIED", run_name, "cost", None, None, devices))
+
+    html = reports.build_single_run_html(
+        imported, run_name, tmp_path, generated_at=GENERATED_AT).decode("utf-8")
+
+    assert ".charts {display:grid;min-width:0;gap:16px}" in html
+    assert ".chart {min-width:0;margin:0;" in html
+    assert (".chart-viewport {width:100%;max-width:100%;min-width:0;"
+            "overflow-x:auto}") in html
     assert ".timeseries {display:block;width:100%;min-width:680px" in html
 
 
