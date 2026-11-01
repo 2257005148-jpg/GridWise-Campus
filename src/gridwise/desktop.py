@@ -10,10 +10,12 @@ from pathlib import Path
 
 try:
     import tkinter as tk
-    from tkinter import filedialog, ttk
+    from tkinter import filedialog, messagebox, simpledialog, ttk
 except ImportError:  # Pure chart selection remains usable without a GUI runtime.
     tk = None
     filedialog = None
+    messagebox = None
+    simpledialog = None
     ttk = None
 
 from .dashboard import (DashboardError, MAX_INTERACTIVE_PERIODS, ROOT,
@@ -30,6 +32,9 @@ from .reports import (ReportCancellation, export_comparison_report,
                       export_single_run_report)
 from .run_storage import (RunStorageError, default_config_path, load_saved_runs_root,
                           save_runs_root)
+from .scenario_presets import (OptimizationPolicy, ScenarioPreset,
+                               ScenarioPresetError, create_preset, delete_preset,
+                               load_presets, save_presets, update_preset)
 
 
 INK = "#16324A"
@@ -179,7 +184,8 @@ class _JobControl:
 
 class EnergyDesktop:
     def __init__(self, root: tk.Tk, *, runs_root: Path | None = None,
-                 config_path: Path | None = None):
+                 config_path: Path | None = None,
+                 preset_path: Path | None = None):
         self.root = root
         root.title("GridWise Campus | 校园能源分析")
         root.geometry("1140x780")
@@ -200,7 +206,12 @@ class EnergyDesktop:
         }
         self.device_source = tk.StringVar(
             value="默认合成设备参数 / Default synthetic equipment parameters")
-        self.config_path = config_path or default_config_path()
+        self.config_path = Path(config_path or default_config_path())
+        self.preset_path = Path(
+            preset_path or self.config_path.with_name("scenario-presets.json"))
+        self.presets: tuple[ScenarioPreset, ...] = ()
+        self.selected_preset = tk.StringVar()
+        self.preset_notice = tk.StringVar(value="尚无预设 / No presets")
         self._config_error = None
         saved = None
         if runs_root is None:
@@ -272,10 +283,12 @@ class EnergyDesktop:
         self.history_search.trace_add("write", self._history_filter_changed)
         self.history_status_filter.trace_add("write", self._history_filter_changed)
         self.history_mode_filter.trace_add("write", self._history_filter_changed)
+        self.selected_preset.trace_add("write", self._preset_selection_changed)
         self.optimization_mode.trace_add("write", self._policy_changed)
         self.peak_cap.trace_add("write", self._policy_changed)
         for value in self.device_values.values():
             value.trace_add("write", self._device_changed)
+        self._reload_presets_at_startup()
         self._poll_id = root.after(50, self._poll)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         root.bind("<Next>", self._scroll_keyboard)
@@ -377,6 +390,34 @@ class EnergyDesktop:
         self.device_source_label = ttk.Label(
             devices, textvariable=self.device_source, style="Sub.TLabel")
         self.device_source_label.grid(row=2, column=0, columnspan=4, sticky="w")
+
+        preset_area = ttk.Frame(devices)
+        preset_area.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(8, 0))
+        ttk.Label(preset_area, text="场景预设 / Scenario preset").grid(
+            row=0, column=0, sticky="w")
+        self.preset_combo = ttk.Combobox(
+            preset_area, textvariable=self.selected_preset, state="readonly", width=28)
+        self.preset_combo.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        preset_actions = ttk.Frame(preset_area)
+        preset_actions.grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self.save_preset_button = ttk.Button(
+            preset_actions, text="保存为 / Save as", command=self._save_preset_as)
+        self.save_preset_button.pack(side="left")
+        self.load_preset_button = ttk.Button(
+            preset_actions, text="加载 / Load", command=self._load_selected_preset,
+            state="disabled")
+        self.load_preset_button.pack(side="left", padx=(6, 0))
+        self.update_preset_button = ttk.Button(
+            preset_actions, text="更新 / Update", command=self._update_selected_preset,
+            state="disabled")
+        self.update_preset_button.pack(side="left", padx=(6, 0))
+        self.delete_preset_button = ttk.Button(
+            preset_actions, text="删除 / Delete", command=self._delete_selected_preset,
+            state="disabled")
+        self.delete_preset_button.pack(side="left", padx=(6, 0))
+        preset_area.columnconfigure(1, weight=1)
+        ttk.Label(devices, textvariable=self.preset_notice, style="Sub.TLabel").grid(
+            row=4, column=0, columnspan=4, sticky="w", pady=(5, 0))
 
         policy = ttk.LabelFrame(outer, text="优化模式 / Optimization mode", padding=(12, 8))
         policy.pack(fill="x", pady=(12, 0))
@@ -871,30 +912,18 @@ class EnergyDesktop:
     def _policy_changed(self, *_):
         if self._updating_policy or self._closing:
             return
-        self._clear_diagnostic()
-        self._clear_history_preview()
-        if self._cancel is not None:
-            self._cancel.set()
-        self._generation += 1
-        self._cancel = None
-        self._job_control = None
-        self._cancel_requested = False
-        self._active_kind = None
-        self._stop_progress()
-        self.selected_run.set("")
-        self.load_button.configure(state="disabled")
-        self.export_run_button.configure(state="disabled")
-        self._clear_results()
-        self._clear_history_comparison()
-        self.status.set("优化模式已改变；请重新运行 / Optimization mode changed; run again")
-        if self.imported is not None and self.imported.report.ready and \
-                len(self.imported.records) <= MAX_INTERACTIVE_PERIODS:
-            self.run_button.configure(state="normal")
-        self._sync_policy_controls()
+        self._configuration_changed(
+            "优化模式已改变；请重新运行 / Optimization mode changed; run again")
 
     def _device_changed(self, *_):
         if self._updating_devices or self._closing:
             return
+        self._configuration_changed(
+            "设备参数已改变；旧结果已失效 / "
+            "Device parameters changed; prior results invalidated")
+
+    def _configuration_changed(self, message):
+        """Invalidate derived state once while preserving checked CSV input."""
         self._clear_diagnostic()
         self._clear_history_preview()
         if self._cancel is not None:
@@ -905,13 +934,19 @@ class EnergyDesktop:
         self._cancel_requested = False
         self._active_kind = None
         self._stop_progress()
+        selection = self.history_table.selection()
+        if selection:
+            self.history_table.selection_remove(*selection)
+        self.history_table.focus("")
         self.selected_run.set("")
+        self.history_selection_detail.set(
+            "选择运行查看状态与详情 / Select a run to view status and details")
         self.load_button.configure(state="disabled")
         self.export_run_button.configure(state="disabled")
         self._clear_results()
         self._clear_history_comparison()
         self._update_device_source()
-        self.status.set("设备参数已改变；旧结果已失效 / Device parameters changed; prior results invalidated")
+        self.status.set(message)
         if self.imported is not None and self.imported.report.ready and \
                 len(self.imported.records) <= MAX_INTERACTIVE_PERIODS:
             self.run_button.configure(state="normal")
@@ -943,6 +978,174 @@ class EnergyDesktop:
         self.compare_a_combo.configure(state=comparison_state)
         self.compare_b_combo.configure(state=comparison_state)
         self._select_comparison()
+        self._sync_preset_controls()
+
+    def _sync_preset_controls(self):
+        busy = self._active_kind is not None or self._closing
+        selected = self._selected_preset_value() is not None
+        self.preset_combo.configure(state="disabled" if busy else "readonly")
+        self.save_preset_button.configure(state="disabled" if busy else "normal")
+        selected_state = "normal" if selected and not busy else "disabled"
+        self.load_preset_button.configure(state=selected_state)
+        self.update_preset_button.configure(state=selected_state)
+        self.delete_preset_button.configure(state=selected_state)
+
+    def _preset_selection_changed(self, *_):
+        if not self._closing:
+            self._sync_preset_controls()
+
+    def _selected_preset_value(self) -> ScenarioPreset | None:
+        selected = self.selected_preset.get()
+        return next((item for item in self.presets if item.name == selected), None)
+
+    def _set_preset_options(self, presets, *, selected_id=None):
+        self.presets = tuple(presets)
+        self.preset_combo.configure(values=tuple(item.name for item in self.presets))
+        selected = next(
+            (item for item in self.presets if item.preset_id == selected_id), None)
+        if selected is None and self.presets:
+            current = self.selected_preset.get()
+            selected = next((item for item in self.presets if item.name == current), None)
+        if selected is None and self.presets:
+            selected = self.presets[0]
+        self.selected_preset.set(selected.name if selected is not None else "")
+        count = len(self.presets)
+        self.preset_notice.set(
+            f"已加载 {count} 个本地预设 / {count} local preset(s) loaded"
+            if count else "尚无预设 / No presets")
+        self._sync_preset_controls()
+
+    def _preset_error(self, action, error):
+        self.status.set(f"{action}；详见日志 / See log")
+        self._append_log(f"ScenarioPresetError: {error}")
+
+    def _reload_presets_at_startup(self):
+        try:
+            presets = load_presets(self.preset_path)
+        except ScenarioPresetError as exc:
+            self._preset_error("预设读取失败 / Preset store unavailable", exc)
+            return
+        self._set_preset_options(presets)
+
+    def _current_preset_configuration(self):
+        devices = self._device_parameters_value()
+        mode = self.optimization_mode.get()
+        if mode == "cost":
+            return devices, OptimizationPolicy("cost")
+        if mode == "peak_cap":
+            return devices, OptimizationPolicy("peak_cap", self._peak_cap_value())
+        raise ScenarioPresetError(f"optimization.mode: unsupported value {mode!r}")
+
+    def _save_preset_as(self):
+        if self._active_kind is not None or self._closing:
+            return
+        try:
+            devices, policy = self._current_preset_configuration()
+        except (DashboardError, ScenarioPresetError) as exc:
+            self._preset_error("预设保存失败 / Preset save failed", exc)
+            return
+        name = simpledialog.askstring(
+            "保存场景预设 / Save scenario preset",
+            "预设名称 / Preset name:", parent=self.root)
+        if name is None:
+            return
+        try:
+            current = load_presets(self.preset_path)
+            updated = create_preset(
+                current, name=name, device_parameters=devices, optimization=policy)
+            save_presets(self.preset_path, updated)
+        except ScenarioPresetError as exc:
+            self._preset_error("预设保存失败 / Preset save failed", exc)
+            return
+        self._set_preset_options(updated, selected_id=updated[-1].preset_id)
+        self.status.set("预设已保存 / Preset saved")
+
+    def _load_selected_preset(self):
+        if self._active_kind is not None or self._closing:
+            return
+        selected = self._selected_preset_value()
+        if selected is None:
+            return
+        try:
+            current = load_presets(self.preset_path)
+            preset = next(
+                item for item in current if item.preset_id == selected.preset_id)
+        except StopIteration:
+            self._preset_error(
+                "预设加载失败 / Preset load failed",
+                ScenarioPresetError(f"preset id not found: {selected.preset_id}"))
+            return
+        except ScenarioPresetError as exc:
+            self._preset_error("预设加载失败 / Preset load failed", exc)
+            return
+
+        previous_devices = {
+            field: value.get() for field, value in self.device_values.items()}
+        previous_policy = (self.optimization_mode.get(), self.peak_cap.get())
+        self._updating_devices = True
+        self._updating_policy = True
+        try:
+            for field in DEVICE_FIELDS:
+                self.device_values[field].set(
+                    f"{getattr(preset.device_parameters, field):g}")
+            self.optimization_mode.set(preset.optimization.mode)
+            if preset.optimization.peak_cap_kw is not None:
+                self.peak_cap.set(f"{preset.optimization.peak_cap_kw:g}")
+        except Exception as exc:
+            for field, value in previous_devices.items():
+                self.device_values[field].set(value)
+            self.optimization_mode.set(previous_policy[0])
+            self.peak_cap.set(previous_policy[1])
+            self._preset_error("预设加载失败 / Preset load failed", exc)
+            return
+        finally:
+            self._updating_devices = False
+            self._updating_policy = False
+        self._set_preset_options(current, selected_id=preset.preset_id)
+        self._configuration_changed(
+            "预设已加载；旧结果已失效 / Preset loaded; prior results invalidated")
+
+    def _update_selected_preset(self):
+        if self._active_kind is not None or self._closing:
+            return
+        selected = self._selected_preset_value()
+        if selected is None:
+            return
+        try:
+            devices, policy = self._current_preset_configuration()
+            current = load_presets(self.preset_path)
+            updated = update_preset(
+                current, selected.preset_id,
+                device_parameters=devices, optimization=policy)
+            save_presets(self.preset_path, updated)
+        except (DashboardError, ScenarioPresetError) as exc:
+            self._preset_error("预设更新失败 / Preset update failed", exc)
+            return
+        self._set_preset_options(updated, selected_id=selected.preset_id)
+        self.status.set("预设已更新 / Preset updated")
+
+    def _delete_selected_preset(self):
+        if self._active_kind is not None or self._closing:
+            return
+        selected = self._selected_preset_value()
+        if selected is None:
+            return
+        if not messagebox.askyesno(
+                "删除场景预设 / Delete scenario preset",
+                f"删除“{selected.name}”？此操作不会删除历史运行或报告。\n"
+                f"Delete '{selected.name}'? Historical runs and reports are kept.",
+                parent=self.root):
+            return
+        try:
+            current = load_presets(self.preset_path)
+            updated = delete_preset(current, selected.preset_id)
+            save_presets(self.preset_path, updated)
+        except ScenarioPresetError as exc:
+            self._preset_error("预设删除失败 / Preset delete failed", exc)
+            return
+        self._set_preset_options(updated)
+        self.status.set("预设已删除；历史运行和报告未更改 / "
+                        "Preset deleted; runs and reports unchanged")
 
     def _device_parameters_value(self) -> DeviceParameters:
         try:

@@ -40,14 +40,15 @@ def pump(root, condition, seconds=3):
     pytest.fail("Tk did not reach the expected state")
 
 
-def new_desktop(*, runs_root=None, config_path=None):
+def new_desktop(*, runs_root=None, config_path=None, preset_path=None):
     global _interpreter
     if _interpreter is None:
         _interpreter = tk.Tk()
         _interpreter.withdraw()
     root = tk.Toplevel(_interpreter)
     root.withdraw()
-    app = desktop.EnergyDesktop(root, runs_root=runs_root, config_path=config_path)
+    app = desktop.EnergyDesktop(
+        root, runs_root=runs_root, config_path=config_path, preset_path=preset_path)
     app._check()
     pump(root, lambda: app.imported is not None)
     return root, app
@@ -147,6 +148,256 @@ def test_invalid_device_parameter_blocks_controller_and_success(monkeypatch):
         assert "设备参数无效" in app.status.get() or "Invalid device" in app.status.get()
         assert "charge_efficiency" in app.quality.get("1.0", "end")
         assert "INPUT_INVALID" in app.quality.get("1.0", "end")
+    finally:
+        close_desktop(root, app)
+
+
+def test_scenario_preset_crud_round_trip_and_delete_confirmation(monkeypatch, tmp_path):
+    preset_path = tmp_path / "scenario-presets.json"
+    root, app = new_desktop(
+        config_path=tmp_path / "desktop.json", preset_path=preset_path)
+    names = iter(("默认设备 / Default equipment", "削峰方案 / Peak plan"))
+    monkeypatch.setattr(desktop.simpledialog, "askstring", lambda *_args, **_kwargs: next(names))
+    confirmations = iter((False, True))
+    monkeypatch.setattr(
+        desktop.messagebox, "askyesno", lambda *_args, **_kwargs: next(confirmations))
+    try:
+        assert app.preset_combo.cget("values") in ("", ())
+
+        app._save_preset_as()
+        assert app.preset_combo.cget("values") == ("默认设备 / Default equipment",)
+
+        app.device_values["capacity_kwh"].set("60")
+        app.optimization_mode.set("peak_cap")
+        app.peak_cap.set("50")
+        root.update()
+        app._save_preset_as()
+        assert app.preset_combo.cget("values") == (
+            "默认设备 / Default equipment", "削峰方案 / Peak plan")
+
+        app.device_values["grid_max_kw"].set("100")
+        root.update()
+        app._update_selected_preset()
+        stored = desktop.load_presets(preset_path)
+        peak = next(item for item in stored if item.name == "削峰方案 / Peak plan")
+        assert peak.device_parameters.grid_max_kw == 100
+        assert peak.device_parameters.capacity_kwh == 60
+        assert peak.optimization.mode == "peak_cap"
+        assert peak.optimization.peak_cap_kw == 50
+
+        app._delete_selected_preset()
+        assert len(desktop.load_presets(preset_path)) == 2
+        app._delete_selected_preset()
+        assert tuple(item.name for item in desktop.load_presets(preset_path)) == (
+            "默认设备 / Default equipment",)
+    finally:
+        close_desktop(root, app)
+
+
+def test_scenario_preset_list_restores_at_startup_and_cost_mode_loads(monkeypatch, tmp_path):
+    preset_path = tmp_path / "scenario-presets.json"
+    config_path = tmp_path / "desktop.json"
+    root, app = new_desktop(config_path=config_path, preset_path=preset_path)
+    monkeypatch.setattr(desktop.simpledialog, "askstring", lambda *_args, **_kwargs: "Cost")
+    try:
+        app._save_preset_as()
+    finally:
+        close_desktop(root, app)
+
+    root, app = new_desktop(config_path=config_path, preset_path=preset_path)
+    try:
+        assert app.preset_combo.cget("values") == ("Cost",)
+        assert app.selected_preset.get() == "Cost"
+        app.device_values["capacity_kwh"].set("60")
+        app.optimization_mode.set("peak_cap")
+        app.peak_cap.set("50")
+        root.update()
+        generation = app._generation
+
+        app._load_selected_preset()
+        root.update()
+
+        assert app._generation == generation + 1
+        assert app.optimization_mode.get() == "cost"
+        assert app.device_values["capacity_kwh"].get() == "80"
+    finally:
+        close_desktop(root, app)
+
+
+def test_invalid_current_configuration_is_rejected_before_preset_name_prompt(
+        monkeypatch, tmp_path):
+    preset_path = tmp_path / "scenario-presets.json"
+    root, app = new_desktop(
+        config_path=tmp_path / "desktop.json", preset_path=preset_path)
+    prompted = []
+    monkeypatch.setattr(
+        desktop.simpledialog, "askstring", lambda *_args, **_kwargs: prompted.append(True))
+    try:
+        app.device_values["charge_efficiency"].set("0")
+        root.update()
+        app._save_preset_as()
+
+        assert prompted == []
+        assert not preset_path.exists()
+        assert "预设保存失败" in app.status.get() or "Preset save failed" in app.status.get()
+    finally:
+        close_desktop(root, app)
+
+
+def test_loading_peak_preset_is_atomic_invalidates_once_and_keeps_checked_csv(
+        monkeypatch, tmp_path):
+    preset_path = tmp_path / "scenario-presets.json"
+    root, app = new_desktop(
+        config_path=tmp_path / "desktop.json", preset_path=preset_path)
+    monkeypatch.setattr(
+        desktop.simpledialog, "askstring", lambda *_args, **_kwargs: "峰值 55 / Peak 55")
+    solver_calls = []
+    monkeypatch.setattr(
+        desktop, "run_comparison", lambda *_args, **_kwargs: solver_calls.append(True))
+    try:
+        app.device_values["grid_max_kw"].set("100")
+        app.device_values["capacity_kwh"].set("60")
+        app.device_values["max_charge_kw"].set("20")
+        app.device_values["max_discharge_kw"].set("18")
+        app.device_values["initial_kwh"].set("24")
+        app.device_values["terminal_kwh"].set("24")
+        app.device_values["charge_efficiency"].set("0.91")
+        app.device_values["discharge_efficiency"].set("0.89")
+        app.optimization_mode.set("peak_cap")
+        app.peak_cap.set("55")
+        root.update()
+        app._save_preset_as()
+
+        imported = app.imported
+        app.device_values["capacity_kwh"].set("80")
+        app.optimization_mode.set("cost")
+        root.update()
+        app.chart = {"stale": True}
+        app.history_preview = object()
+        app.history_comparison = object()
+        app.selected_run.set("stale-run")
+        app.load_button.configure(state="normal")
+        app.export_run_button.configure(state="normal")
+        app.export_comparison_button.configure(state="normal")
+        app._show_diagnostic(diagnose_failure(RuntimeError("stale diagnostic")))
+        generation = app._generation
+
+        app._load_selected_preset()
+        root.update()
+
+        assert app._generation == generation + 1
+        assert app.imported is imported
+        assert app.optimization_mode.get() == "peak_cap"
+        assert app.peak_cap.get() == "55"
+        assert {field: value.get() for field, value in app.device_values.items()} == {
+            "grid_max_kw": "100",
+            "capacity_kwh": "60",
+            "max_charge_kw": "20",
+            "max_discharge_kw": "18",
+            "initial_kwh": "24",
+            "terminal_kwh": "24",
+            "charge_efficiency": "0.91",
+            "discharge_efficiency": "0.89",
+        }
+        assert app.chart is None
+        assert app.current_diagnostic is None
+        assert app.history_preview is None
+        assert app.history_comparison is None
+        assert app.selected_run.get() == ""
+        assert app.load_button.instate(["disabled"])
+        assert app.export_run_button.instate(["disabled"])
+        assert app.export_comparison_button.instate(["disabled"])
+        assert solver_calls == []
+    finally:
+        close_desktop(root, app)
+
+
+def test_preset_load_clears_real_history_tree_selection_and_late_event(
+        monkeypatch, tmp_path):
+    preset_path = tmp_path / "scenario-presets.json"
+    root, app = new_desktop(
+        config_path=tmp_path / "desktop.json", preset_path=preset_path)
+    monkeypatch.setattr(desktop.simpledialog, "askstring", lambda *_args, **_kwargs: "Safe")
+    entry = RunHistoryEntry(
+        "run-" + "a" * 32, "VALID", "verified", "cost", None)
+    try:
+        app._save_preset_as()
+        app._show_history((entry,))
+        app.history_table.selection_set(entry.name)
+        app.history_table.focus(entry.name)
+        app._select_history()
+
+        assert app.selected_run.get() == app._history_label(entry)
+        assert app.load_button.instate(["!disabled"])
+        assert app.preview_button.instate(["!disabled"])
+        assert app.export_run_button.instate(["!disabled"])
+
+        app._load_selected_preset()
+        root.update()
+
+        assert app.history_table.selection() == ()
+        assert app.history_table.focus() == ""
+        assert app.selected_run.get() == ""
+        assert app.history_selection_detail.get() == (
+            "选择运行查看状态与详情 / Select a run to view status and details")
+        assert app.load_button.instate(["disabled"])
+        assert app.preview_button.instate(["disabled"])
+        assert app.export_run_button.instate(["disabled"])
+
+        app.history_table.event_generate("<<TreeviewSelect>>")
+        root.update()
+        assert app.history_table.selection() == ()
+        assert app.selected_run.get() == ""
+        assert app.load_button.instate(["disabled"])
+        assert app.preview_button.instate(["disabled"])
+        assert app.export_run_button.instate(["disabled"])
+    finally:
+        close_desktop(root, app)
+
+
+def test_preset_load_failure_keeps_all_configuration_unchanged(monkeypatch, tmp_path):
+    preset_path = tmp_path / "scenario-presets.json"
+    root, app = new_desktop(
+        config_path=tmp_path / "desktop.json", preset_path=preset_path)
+    monkeypatch.setattr(desktop.simpledialog, "askstring", lambda *_args, **_kwargs: "Safe")
+    try:
+        app._save_preset_as()
+        before_devices = {field: value.get() for field, value in app.device_values.items()}
+        before_policy = (app.optimization_mode.get(), app.peak_cap.get())
+        generation = app._generation
+        preset_path.write_text('{"format_version":1,"presets":[', encoding="utf-8")
+
+        app._load_selected_preset()
+        root.update()
+
+        assert {field: value.get() for field, value in app.device_values.items()} == before_devices
+        assert (app.optimization_mode.get(), app.peak_cap.get()) == before_policy
+        assert app._generation == generation
+        assert "预设加载失败" in app.status.get() or "Preset load failed" in app.status.get()
+    finally:
+        close_desktop(root, app)
+
+
+def test_preset_controls_are_disabled_while_a_task_is_active(monkeypatch, tmp_path):
+    root, app = new_desktop(
+        config_path=tmp_path / "desktop.json",
+        preset_path=tmp_path / "scenario-presets.json")
+    monkeypatch.setattr(desktop.simpledialog, "askstring", lambda *_args, **_kwargs: "Busy")
+    try:
+        app._save_preset_as()
+        app._active_kind = "run"
+        app._sync_policy_controls()
+        assert app.preset_combo.instate(["disabled"])
+        assert app.save_preset_button.instate(["disabled"])
+        assert app.load_preset_button.instate(["disabled"])
+        assert app.update_preset_button.instate(["disabled"])
+        assert app.delete_preset_button.instate(["disabled"])
+
+        app._active_kind = None
+        app._sync_policy_controls()
+        assert app.preset_combo.instate(["readonly"])
+        assert app.save_preset_button.instate(["!disabled"])
+        assert app.load_preset_button.instate(["!disabled"])
     finally:
         close_desktop(root, app)
 
