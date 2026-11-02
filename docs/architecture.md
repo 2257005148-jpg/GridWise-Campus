@@ -81,3 +81,11 @@ Tk 主线程持有模式单选项、上限输入和结果策略栏；后台调�
 `reports.py` 将控制层已验证的 `chart` 时序直接渲染为自包含 SVG。单次报告展示优化与无储能基线的购电功率、累计电费，以及优化电池 SOC；A/B 报告使用 `compare_verified_runs()` 同一次公平性检查产生的两份图表，展示运行 A 与 B 的对应三组曲线。SVG 只负责坐标映射和 HTML 转义，不重新计算电费、购电量、峰值或优化结果。空序列、行数不匹配、缺失序列及 NaN/Infinity 在文件发布前失败。/ The report layer renders already validated chart series as inline SVG. Fair A/B charts are carried by the same comparison result that passed source, solver, model, equipment and baseline checks; no second unbound read or metric implementation is introduced.
 
 桌面按钮复用现有后台任务、取消事件和 generation 隔离；文件对话框在主线程打开，安全读取、比较和写入在工作线程完成，最终状态只由主线程更新。输入、步长、设备、运行根目录或 A/B 选择变化时，相应导出资格立即失效。 / Export uses the existing worker and generation boundary, while all Tk mutations stay on the main thread.
+
+## v0.3.24 场景预设交换 / Scenario preset exchange
+
+`scenario_presets.py` 同时承担本地预设库和单预设交换文档的结构化校验，但两种文件格式彼此独立。本地 `scenario-presets.json` 保存稳定 ID；交换文档只保存名称、`DeviceParameters` 八项设备参数及 `OptimizationPolicy`，不保存内部 UUID。`load_preset_exchange` 完整校验后才返回带新 UUID 的不可变 `ScenarioPreset`，且自身不写本地预设库。/ The preset module validates two separate contracts: the local collection retains stable IDs, while a single-preset exchange document deliberately omits its local UUID. Import is read-only and returns a fully validated immutable object with a fresh ID.
+
+桌面导入链路为 `文件对话框 → load_preset_exchange → 重名处理 → create_preset → save_presets → 刷新下拉框`。成功导入只增加并选中新预设，不加载设备或策略，不调用 `_configuration_changed()`，也不触发求解、审计、运行发布或当前结果失效。导出链路为 `选中稳定 ID → 重新读取本地库 → export_preset_exchange`；核心层再次按 ID 读取已保存对象，序列化到同目录私有临时文件，刷新并 `fsync` 后以 `os.link()` 原子发布且拒绝覆盖，随后删除临时链接。/ Import composes the existing CRUD and atomic collection save without applying the preset. Export rereads the saved stable ID and uses a same-directory, fsynced temporary plus atomic no-overwrite hard-link publication.
+
+交换输入和输出均限制为 128 KiB，严格拒绝错误版本、缺失或额外字段、重复 JSON 键、非有限值、非 UTF-8、链接、junction 和非普通文件；设备和策略继续复用公共校验器。本设计不提供多进程写入合并、目录项断电持久性，也不声称能抵御恶意进程持续替换祖先目录；不支持硬链接的文件系统会失败关闭。/ The bounded strict parser reuses existing device and policy validation. This is not a multi-process merge protocol, a directory-durability guarantee, or a sandbox against a hostile local process replacing ancestors; filesystems without the required hard-link operation fail closed.

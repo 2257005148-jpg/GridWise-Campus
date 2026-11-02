@@ -25,6 +25,9 @@ from gridwise.device import DeviceParameters
 from gridwise.diagnostics import (FailureCategory, FailureStage, RunDiagnostic,
                                   diagnose_failure)
 from gridwise.run_artifacts import RunArtifactError
+from gridwise.scenario_presets import (OptimizationPolicy, ScenarioPreset,
+                                       ScenarioPresetError, load_preset_exchange,
+                                       serialize_preset_exchange)
 
 
 _interpreter = None
@@ -190,6 +193,203 @@ def test_scenario_preset_crud_round_trip_and_delete_confirmation(monkeypatch, tm
         app._delete_selected_preset()
         assert tuple(item.name for item in desktop.load_presets(preset_path)) == (
             "默认设备 / Default equipment",)
+    finally:
+        close_desktop(root, app)
+
+
+def test_preset_exchange_controls_import_without_changing_active_context(
+        monkeypatch, tmp_path):
+    preset_path = tmp_path / "scenario-presets.json"
+    exchange_path = tmp_path / "外部教学楼预设.json"
+    source = ScenarioPreset(
+        "external-private-id", "教学楼午间削峰",
+        DeviceParameters(100, 60, 24, 24, 20, 18, 0.91, 0.89),
+        OptimizationPolicy("peak_cap", 55))
+    exchange_path.write_bytes(serialize_preset_exchange(source))
+    root, app = new_desktop(
+        config_path=tmp_path / "desktop.json", preset_path=preset_path)
+    monkeypatch.setattr(
+        desktop.filedialog, "askopenfilename", lambda **_kwargs: str(exchange_path))
+    solver_calls = []
+    monkeypatch.setattr(
+        desktop, "run_comparison", lambda *_args, **_kwargs: solver_calls.append(True))
+    try:
+        assert "Import" in app.import_preset_button.cget("text")
+        assert "Export" in app.export_preset_button.cget("text")
+        assert app.export_preset_button.instate(["disabled"])
+        imported_input = app.imported
+        devices = {field: value.get() for field, value in app.device_values.items()}
+        policy = (app.optimization_mode.get(), app.peak_cap.get())
+        app.chart = {"existing": True}
+        app.history_preview = object()
+        app.history_comparison = object()
+        app.selected_run.set("existing-run")
+        app.export_run_button.configure(state="normal")
+        app.export_comparison_button.configure(state="normal")
+        generation = app._generation
+
+        app._import_preset_exchange()
+        root.update()
+
+        stored = desktop.load_presets(preset_path)
+        assert len(stored) == 1
+        assert stored[0].preset_id != source.preset_id
+        assert stored[0].name == "教学楼午间削峰"
+        assert stored[0].device_parameters == source.device_parameters
+        assert stored[0].optimization == source.optimization
+        assert app.selected_preset.get() == "教学楼午间削峰"
+        assert app.export_preset_button.instate(["!disabled"])
+        assert app.imported is imported_input
+        assert {field: value.get() for field, value in app.device_values.items()} == devices
+        assert (app.optimization_mode.get(), app.peak_cap.get()) == policy
+        assert app.chart == {"existing": True}
+        assert app.history_preview is not None
+        assert app.history_comparison is not None
+        assert app.selected_run.get() == "existing-run"
+        assert app.export_run_button.instate(["!disabled"])
+        assert app.export_comparison_button.instate(["!disabled"])
+        assert app._generation == generation
+        assert solver_calls == []
+    finally:
+        close_desktop(root, app)
+
+
+def test_preset_exchange_duplicate_cancel_and_rename_are_non_overwriting(
+        monkeypatch, tmp_path):
+    preset_path = tmp_path / "scenario-presets.json"
+    existing = ScenarioPreset(
+        "existing-id", "同名预设", DeviceParameters(120, 80, 40, 40, 30, 30, 0.95, 0.95),
+        OptimizationPolicy("cost"))
+    desktop.save_presets(preset_path, (existing,))
+    external = ScenarioPreset(
+        "external-id", "同名预设", DeviceParameters(100, 60, 24, 24, 20, 18, 0.91, 0.89),
+        OptimizationPolicy("peak_cap", 55))
+    exchange_path = tmp_path / "duplicate.json"
+    exchange_path.write_bytes(serialize_preset_exchange(external))
+    root, app = new_desktop(
+        config_path=tmp_path / "desktop.json", preset_path=preset_path)
+    monkeypatch.setattr(
+        desktop.filedialog, "askopenfilename", lambda **_kwargs: str(exchange_path))
+    rename_choices = iter((False, True))
+    monkeypatch.setattr(
+        desktop.messagebox, "askyesno",
+        lambda *_args, **_kwargs: next(rename_choices))
+    monkeypatch.setattr(
+        desktop.simpledialog, "askstring",
+        lambda *_args, **_kwargs: "同名预设（导入）")
+    try:
+        before = preset_path.read_bytes()
+        selected = app.selected_preset.get()
+        generation = app._generation
+
+        app._import_preset_exchange()
+        root.update()
+
+        assert preset_path.read_bytes() == before
+        assert app.selected_preset.get() == selected
+        assert app._generation == generation
+
+        app._import_preset_exchange()
+        root.update()
+
+        stored = desktop.load_presets(preset_path)
+        assert tuple(item.name for item in stored) == (
+            "同名预设", "同名预设（导入）")
+        imported = stored[1]
+        assert imported.preset_id not in {existing.preset_id, external.preset_id}
+        assert imported.device_parameters == external.device_parameters
+        assert imported.optimization == external.optimization
+        assert app.selected_preset.get() == imported.name
+        assert app._generation == generation
+    finally:
+        close_desktop(root, app)
+
+
+def test_preset_exchange_import_cancel_and_save_failure_keep_store_and_selection(
+        monkeypatch, tmp_path):
+    preset_path = tmp_path / "scenario-presets.json"
+    existing = ScenarioPreset(
+        "existing-id", "现有预设", DeviceParameters(120, 80, 40, 40, 30, 30, 0.95, 0.95),
+        OptimizationPolicy("cost"))
+    desktop.save_presets(preset_path, (existing,))
+    external = ScenarioPreset(
+        "external-id", "外部预设", DeviceParameters(100, 60, 24, 24, 20, 18, 0.91, 0.89),
+        OptimizationPolicy("peak_cap", 55))
+    exchange_path = tmp_path / "external.json"
+    exchange_path.write_bytes(serialize_preset_exchange(external))
+    root, app = new_desktop(
+        config_path=tmp_path / "desktop.json", preset_path=preset_path)
+    try:
+        before = preset_path.read_bytes()
+        selected = app.selected_preset.get()
+        status = app.status.get()
+        monkeypatch.setattr(
+            desktop.filedialog, "askopenfilename", lambda **_kwargs: "")
+
+        app._import_preset_exchange()
+
+        assert preset_path.read_bytes() == before
+        assert app.selected_preset.get() == selected
+        assert app.status.get() == status
+
+        monkeypatch.setattr(
+            desktop.filedialog, "askopenfilename", lambda **_kwargs: str(exchange_path))
+        monkeypatch.setattr(
+            desktop, "save_presets",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                ScenarioPresetError("synthetic preset save failure")))
+
+        app._import_preset_exchange()
+        root.update()
+
+        assert preset_path.read_bytes() == before
+        assert app.selected_preset.get() == selected
+        assert "导入失败" in app.status.get() or "import failed" in app.status.get()
+    finally:
+        close_desktop(root, app)
+
+
+def test_preset_exchange_export_reloads_saved_id_and_preserves_existing_target(
+        monkeypatch, tmp_path):
+    preset_path = tmp_path / "scenario-presets.json"
+    source = ScenarioPreset(
+        "saved-id", "导出预设", DeviceParameters(100, 60, 24, 24, 20, 18, 0.91, 0.89),
+        OptimizationPolicy("peak_cap", 55))
+    desktop.save_presets(preset_path, (source,))
+    root, app = new_desktop(
+        config_path=tmp_path / "desktop.json", preset_path=preset_path)
+    target = tmp_path / "exported.json"
+    targets = iter(("", str(target), str(target)))
+    monkeypatch.setattr(
+        desktop.filedialog, "asksaveasfilename",
+        lambda **_kwargs: next(targets))
+    try:
+        selected = app.selected_preset.get()
+        status = app.status.get()
+
+        app._export_selected_preset()
+        assert not target.exists()
+        assert app.selected_preset.get() == selected
+        assert app.status.get() == status
+
+        app._export_selected_preset()
+        imported = load_preset_exchange(target)
+        assert imported.name == source.name
+        assert imported.device_parameters == source.device_parameters
+        assert imported.optimization == source.optimization
+        assert "exported.json" in app.status.get()
+
+        before = target.read_bytes()
+        app._export_selected_preset()
+        assert target.read_bytes() == before
+        assert app.selected_preset.get() == selected
+        assert "导出失败" in app.status.get() or "export failed" in app.status.get()
+
+        desktop.save_presets(preset_path, ())
+        app._export_selected_preset()
+        assert app.selected_preset.get() == selected
+        assert app.export_preset_button.instate(["disabled"])
+        assert "preset id not found" in app.quality.get("1.0", "end")
     finally:
         close_desktop(root, app)
 
@@ -392,12 +592,16 @@ def test_preset_controls_are_disabled_while_a_task_is_active(monkeypatch, tmp_pa
         assert app.load_preset_button.instate(["disabled"])
         assert app.update_preset_button.instate(["disabled"])
         assert app.delete_preset_button.instate(["disabled"])
+        assert app.import_preset_button.instate(["disabled"])
+        assert app.export_preset_button.instate(["disabled"])
 
         app._active_kind = None
         app._sync_policy_controls()
         assert app.preset_combo.instate(["readonly"])
         assert app.save_preset_button.instate(["!disabled"])
         assert app.load_preset_button.instate(["!disabled"])
+        assert app.import_preset_button.instate(["!disabled"])
+        assert app.export_preset_button.instate(["!disabled"])
     finally:
         close_desktop(root, app)
 

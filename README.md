@@ -12,6 +12,7 @@
 - 本机双语交互原型：文件选择、质量拦截、优化/基线对比与五张图 / Local bilingual desktop prototype with file selection, quality gating, comparison and five charts.
 - 桌面端显式选择纯电费或峰值上限模式，记录并复核运行策略 / Desktop selection of cost-only or peak-cap policy with traceable verified metadata.
 - 桌面端可校验并实际使用自定义电网与电池参数 / Validated custom grid and battery parameters used by the desktop solver.
+- 本地场景预设可创建、加载、更新、删除，并以严格校验的单预设 JSON 导入或导出 / Local scenario presets support CRUD plus strictly validated single-preset JSON import and export.
 - 已验证单次运行与公平 A/B 对比可导出自包含 HTML 报告 / Verified runs and fair A/B comparisons can be exported as self-contained HTML reports.
 
 ## 安装与运行 / Install and run
@@ -48,6 +49,8 @@ v0.3.12 桌面默认仍为“纯电费优化”。选择“峰值上限优化”
 v0.3.13 将 [`examples/synthetic-day.csv`](examples/synthetic-day.csv) 作为可复制的自定义输入模板。合法的 `Z`、`+0000` 和 `+00:00` 时间戳在内存中规范化为带冒号的偏移形式，原 CSV 字节不修改；质量通过后显示时间范围、功率范围、价格范围及按 `Σ功率×step_hours` 计算的负荷/光伏可用电量。CSV 只替换时间序列、负荷、光伏和电价，电网及电池/SOC 参数仍来自合成设备场景；桌面最多运行 96 时段。详见[自定义 CSV 导入](docs/custom-csv-import.md)。/ The existing sample CSV is the copyable template. Valid offset spellings are normalized in memory, while the source bytes remain untouched. Input summaries do not change the fixed synthetic equipment assumptions or the 96-period desktop limit.
 
 v0.3.14 在桌面增加独立的[设备参数配置](docs/custom-device-parameters.md)：默认值仍取自合成模板，用户可修改电网购电上限、电池容量、充放电功率、以 kWh 表示的初末 SOC 及两种效率。参数改变会立即清除旧结果；实际值写入同次运行的 `scenario.json`，并由现有独立审计、清单哈希和安全读取复核。历史运行被选择后恢复其已校验设备参数。/ The desktop can now override validated grid and battery assumptions. Changes invalidate stale results, while the exact values are carried in the verified scenario and restored with a selected historical run.
+
+v0.3.24 在既有预设区域增加“导入 / Import”和“导出 / Export”。交换文件只含名称、八项设备参数和优化策略，不含本地 UUID、CSV、运行结果或路径；导入会完整校验并生成新 ID，重名时只能取消或另存为新名称，不会自动加载参数或启动求解。导出按稳定 ID 重新读取已保存预设，目标已存在或文件系统不支持所需硬链接操作时失败关闭。格式、操作和限制见[场景预设交换](docs/scenario-preset-exchange.md)。/ Preset exchange uses one versioned UTF-8 JSON document without local IDs or run data. Import validates before creating a fresh local ID; export rereads the saved preset and atomically refuses overwrite. See the preset exchange guide for the exact contract and limitations.
 
 v0.3.15 可从同一运行根目录选择两个 `VALID` 历史运行进行[公平对比](docs/run-comparison.md)。控制层重新安全读取两个运行并用当前已检查 CSV 重算指标；只有场景原始字节摘要、求解器、模型源码摘要、时间序列、时间步和设备参数均匹配时，才显示电费、购电量和购电峰值及 `B − A`。优化模式和峰值上限是允许不同的策略变量。完整性通过、公平条件通过和指标变化是三种独立结论。/ Two verified historical runs can be compared only after safe rereading, current-input alignment and fair-context checks. Strategy may differ, while source data, solver, model source and equipment must match.
 

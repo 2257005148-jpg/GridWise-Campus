@@ -34,6 +34,7 @@ from .run_storage import (RunStorageError, default_config_path, load_saved_runs_
                           save_runs_root)
 from .scenario_presets import (OptimizationPolicy, ScenarioPreset,
                                ScenarioPresetError, create_preset, delete_preset,
+                               export_preset_exchange, load_preset_exchange,
                                load_presets, save_presets, update_preset)
 
 
@@ -415,6 +416,13 @@ class EnergyDesktop:
             preset_actions, text="删除 / Delete", command=self._delete_selected_preset,
             state="disabled")
         self.delete_preset_button.pack(side="left", padx=(6, 0))
+        self.import_preset_button = ttk.Button(
+            preset_actions, text="导入 / Import", command=self._import_preset_exchange)
+        self.import_preset_button.pack(side="left", padx=(6, 0))
+        self.export_preset_button = ttk.Button(
+            preset_actions, text="导出 / Export", command=self._export_selected_preset,
+            state="disabled")
+        self.export_preset_button.pack(side="left", padx=(6, 0))
         preset_area.columnconfigure(1, weight=1)
         ttk.Label(devices, textvariable=self.preset_notice, style="Sub.TLabel").grid(
             row=4, column=0, columnspan=4, sticky="w", pady=(5, 0))
@@ -985,10 +993,12 @@ class EnergyDesktop:
         selected = self._selected_preset_value() is not None
         self.preset_combo.configure(state="disabled" if busy else "readonly")
         self.save_preset_button.configure(state="disabled" if busy else "normal")
+        self.import_preset_button.configure(state="disabled" if busy else "normal")
         selected_state = "normal" if selected and not busy else "disabled"
         self.load_preset_button.configure(state=selected_state)
         self.update_preset_button.configure(state=selected_state)
         self.delete_preset_button.configure(state=selected_state)
+        self.export_preset_button.configure(state=selected_state)
 
     def _preset_selection_changed(self, *_):
         if not self._closing:
@@ -1146,6 +1156,75 @@ class EnergyDesktop:
         self._set_preset_options(updated)
         self.status.set("预设已删除；历史运行和报告未更改 / "
                         "Preset deleted; runs and reports unchanged")
+
+    def _import_preset_exchange(self):
+        if self._active_kind is not None or self._closing:
+            return
+        selected_path = filedialog.askopenfilename(
+            title="导入场景预设 / Import scenario preset",
+            filetypes=[("GridWise preset", "*.json"), ("All files", "*.*")])
+        if not selected_path:
+            return
+        try:
+            imported = load_preset_exchange(Path(selected_path))
+            current = load_presets(self.preset_path)
+            name = imported.name
+            if any(item.name.casefold() == name.casefold() for item in current):
+                rename = messagebox.askyesno(
+                    "预设名称重复 / Duplicate preset name",
+                    f"预设“{name}”已存在。是否另存为新名称？\n"
+                    f"Preset '{name}' already exists. Save with a new name?",
+                    parent=self.root)
+                if not rename:
+                    return
+                renamed = simpledialog.askstring(
+                    "另存为新名称 / Save with a new name",
+                    "新预设名称 / New preset name:", parent=self.root)
+                if renamed is None:
+                    return
+                name = renamed
+            updated = create_preset(
+                current, name=name,
+                device_parameters=imported.device_parameters,
+                optimization=imported.optimization,
+                preset_id=imported.preset_id)
+            save_presets(self.preset_path, updated)
+        except ScenarioPresetError as exc:
+            self._preset_error("预设导入失败 / Preset import failed", exc)
+            return
+        self._set_preset_options(updated, selected_id=imported.preset_id)
+        self.status.set(f"预设已导入：{name} / Preset imported: {name}")
+
+    def _export_selected_preset(self):
+        if self._active_kind is not None or self._closing:
+            return
+        selected = self._selected_preset_value()
+        if selected is None:
+            return
+        try:
+            current = load_presets(self.preset_path)
+            if not any(item.preset_id == selected.preset_id for item in current):
+                self.export_preset_button.configure(state="disabled")
+                raise ScenarioPresetError(
+                    f"preset id not found: {selected.preset_id}")
+        except ScenarioPresetError as exc:
+            self._preset_error("预设导出失败 / Preset export failed", exc)
+            return
+        selected_path = filedialog.asksaveasfilename(
+            title="导出场景预设 / Export scenario preset",
+            defaultextension=".json",
+            filetypes=[("GridWise preset", "*.json")],
+            initialfile=f"{selected.name}.json",
+            confirmoverwrite=False)
+        if not selected_path:
+            return
+        try:
+            destination = export_preset_exchange(
+                self.preset_path, selected.preset_id, Path(selected_path))
+        except ScenarioPresetError as exc:
+            self._preset_error("预设导出失败 / Preset export failed", exc)
+            return
+        self.status.set(f"预设已导出：{destination} / Preset exported: {destination}")
 
     def _device_parameters_value(self) -> DeviceParameters:
         try:

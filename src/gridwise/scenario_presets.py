@@ -23,6 +23,8 @@ from .device import (DEVICE_FIELDS, DeviceParameterError, DeviceParameters,
 
 
 FORMAT_VERSION = 1
+EXCHANGE_DOCUMENT_TYPE = "gridwise-scenario-preset"
+EXCHANGE_FORMAT_VERSION = 1
 MAX_FILE_BYTES = 128 * 1024
 MAX_PRESETS = 100
 MAX_NAME_CHARS = 80
@@ -169,6 +171,172 @@ def _preset_mapping(preset: ScenarioPreset) -> dict:
             "peak_cap_kw": preset.optimization.peak_cap_kw,
         },
     }
+
+
+def _exchange_preset_mapping(preset: ScenarioPreset) -> dict:
+    """Return the portable subset of a validated preset, without its local id."""
+    _validate_collection((preset,))
+    stored = _preset_mapping(preset)
+    return {
+        "name": stored["name"],
+        "device_parameters": stored["device_parameters"],
+        "optimization": stored["optimization"],
+    }
+
+
+def serialize_preset_exchange(preset: ScenarioPreset) -> bytes:
+    """Serialize one preset into the bounded, id-free exchange format."""
+    try:
+        payload = (json.dumps({
+            "document_type": EXCHANGE_DOCUMENT_TYPE,
+            "format_version": EXCHANGE_FORMAT_VERSION,
+            "preset": _exchange_preset_mapping(preset),
+        }, ensure_ascii=False, allow_nan=False, indent=2) + "\n").encode("utf-8")
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise ScenarioPresetError(f"cannot serialize preset exchange: {exc}") from exc
+    if len(payload) > MAX_FILE_BYTES:
+        raise ScenarioPresetError(f"preset exchange exceeds {MAX_FILE_BYTES} bytes")
+    return payload
+
+
+def _decode_exchange(raw: bytes, source: Path) -> ScenarioPreset:
+    try:
+        data = json.loads(
+            raw.decode("utf-8"), object_pairs_hook=_unique_pairs,
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ScenarioPresetError(f"non-finite JSON value: {value}")))
+        root = _exact_mapping(
+            data, {"document_type", "format_version", "preset"},
+            "preset exchange")
+        if root["document_type"] != EXCHANGE_DOCUMENT_TYPE:
+            raise ScenarioPresetError("preset exchange document_type is unsupported")
+        if type(root["format_version"]) is not int or \
+                root["format_version"] != EXCHANGE_FORMAT_VERSION:
+            raise ScenarioPresetError("preset exchange format_version is unsupported")
+        item = _exact_mapping(
+            root["preset"], {"name", "device_parameters", "optimization"},
+            "preset exchange preset")
+        return _preset_from_mapping({
+            "id": uuid.uuid4().hex,
+            "name": item["name"],
+            "device_parameters": item["device_parameters"],
+            "optimization": item["optimization"],
+        })
+    except ScenarioPresetError:
+        raise
+    except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
+        raise ScenarioPresetError(f"cannot read preset exchange {source}: {exc}") from exc
+
+
+def load_preset_exchange(path: Path) -> ScenarioPreset:
+    """Read one bounded exchange file and assign a fresh local preset id."""
+    source = _safe_path(path)
+    descriptor = None
+    try:
+        before = source.lstat()
+        if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_FILE_BYTES:
+            raise ScenarioPresetError(
+                f"preset exchange is not a bounded regular file: {source}")
+        flags = os.O_RDONLY
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(source, flags)
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_size > MAX_FILE_BYTES:
+            raise ScenarioPresetError(
+                f"preset exchange is not a bounded regular file: {source}")
+        if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+            raise ScenarioPresetError(f"preset exchange changed while opening: {source}")
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = None
+            raw = stream.read(MAX_FILE_BYTES + 1)
+            after_read = os.fstat(stream.fileno())
+        if len(raw) > MAX_FILE_BYTES:
+            raise ScenarioPresetError(
+                f"preset exchange exceeds {MAX_FILE_BYTES} bytes: {source}")
+        after = source.lstat()
+        if (opened.st_dev, opened.st_ino) != (after.st_dev, after.st_ino) or \
+                (opened.st_size, opened.st_mtime_ns) != \
+                (after_read.st_size, after_read.st_mtime_ns):
+            raise ScenarioPresetError(f"preset exchange changed while reading: {source}")
+        _reject_links(source)
+        return _decode_exchange(raw, source)
+    except ScenarioPresetError:
+        raise
+    except (OSError, UnicodeError) as exc:
+        raise ScenarioPresetError(f"cannot read preset exchange {source}: {exc}") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def export_preset_exchange(store_path: Path, preset_id: str,
+                           target: Path) -> Path:
+    """Atomically publish one saved preset without replacing any target."""
+    presets = load_presets(store_path)
+    try:
+        preset = next(item for item in presets if item.preset_id == preset_id)
+    except StopIteration as exc:
+        raise ScenarioPresetError(f"preset id not found: {preset_id}") from exc
+    payload = serialize_preset_exchange(preset)
+    destination = _safe_path(target)
+    if os.path.lexists(destination):
+        raise ScenarioPresetError(f"preset exchange target already exists: {destination}")
+
+    temporary = None
+    publish_error = None
+    cleanup_error = None
+    published = False
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        _reject_links(destination)
+        descriptor, temporary = tempfile.mkstemp(
+            prefix="scenario-preset-exchange-", suffix=".tmp",
+            dir=destination.parent)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary_info = Path(temporary).lstat()
+        if not stat.S_ISREG(temporary_info.st_mode):
+            raise ScenarioPresetError(
+                f"preset exchange temporary is not a regular file: {temporary}")
+        _reject_links(destination)
+        if os.path.lexists(destination):
+            raise FileExistsError(f"preset exchange target already exists: {destination}")
+        os.link(temporary, destination, follow_symlinks=False)
+        published = True
+    except Exception as exc:
+        publish_error = exc
+    finally:
+        if temporary is not None:
+            try:
+                Path(temporary).unlink()
+                temporary = None
+            except OSError as exc:
+                cleanup_error = exc
+
+    if cleanup_error is not None:
+        detail = ("private preset exchange temporary cleanup failed at "
+                  f"{Path(temporary).absolute()}: {cleanup_error!r}")
+        if publish_error is not None:
+            raise ScenarioPresetError(
+                f"cannot export preset exchange {destination}: {publish_error}; "
+                f"{detail}") from publish_error
+        if published:
+            raise ScenarioPresetError(
+                f"preset exchange was published to {destination}, but {detail}") \
+                from cleanup_error
+        raise ScenarioPresetError(detail) from cleanup_error
+    if publish_error is not None:
+        if isinstance(publish_error, ScenarioPresetError):
+            raise publish_error
+        raise ScenarioPresetError(
+            f"cannot export preset exchange {destination}: {publish_error}") \
+            from publish_error
+    return destination
 
 
 def create_preset(presets: Iterable[ScenarioPreset], *, name: str,
