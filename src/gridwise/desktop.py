@@ -319,9 +319,41 @@ class EnergyDesktop:
                         font=("Microsoft YaHei UI", 9))
 
     def _layout(self):
-        self._viewport = tk.Canvas(self.root, bg=PAPER, highlightthickness=0)
+        shell = ttk.Frame(self.root)
+        shell.pack(fill="both", expand=True)
+        header = ttk.Frame(shell, padding=(18, 16, 18, 4))
+        header.pack(fill="x")
+        ttk.Label(header, text="GridWise Campus", style="Title.TLabel").pack(anchor="w")
+        self.subtitle = ttk.Label(
+            header, text="校园能源调度观察台 / Offline dispatch workspace",
+            style="Sub.TLabel")
+        self.subtitle.pack(anchor="w", fill="x")
+
+        self.workflow_notebook = ttk.Notebook(shell)
+        self.workflow_notebook.pack(fill="both", expand=True, padx=10, pady=(4, 10))
+        self.configure_tab = ttk.Frame(self.workflow_notebook)
+        self.history_tab = ttk.Frame(self.workflow_notebook)
+        self.workflow_notebook.add(
+            self.configure_tab, text="配置与运行 / Configure & Run")
+        self.workflow_notebook.add(
+            self.history_tab, text="历史与报告 / History & Reports")
+
+        self.history_status_label = ttk.Label(
+            self.history_tab, textvariable=self.status,
+            style="Sub.TLabel", wraplength=450)
+        self.history_status_label.pack(
+            side="top", anchor="w", fill="x", padx=18, pady=(4, 0))
+        self.history_status_label.bind(
+            "<Configure>",
+            lambda event: self.history_status_label.configure(
+                wraplength=max(80, event.width - 12)))
+        self._history_content_frame = ttk.Frame(self.history_tab)
+        self._history_content_frame.pack(side="top", fill="both", expand=True)
+
+        self._viewport = tk.Canvas(
+            self.configure_tab, bg=PAPER, highlightthickness=0)
         self._viewport.pack(side="left", fill="both", expand=True)
-        scrollbar = ttk.Scrollbar(self.root, orient="vertical",
+        scrollbar = ttk.Scrollbar(self.configure_tab, orient="vertical",
                                   command=self._viewport.yview)
         scrollbar.pack(side="right", fill="y")
         self._viewport.configure(yscrollcommand=scrollbar.set)
@@ -332,10 +364,24 @@ class EnergyDesktop:
             scrollregion=self._viewport.bbox("all")))
         self._viewport.bind("<MouseWheel>", self._scroll_page)
         outer.bind("<MouseWheel>", self._scroll_page)
-        ttk.Label(outer, text="GridWise Campus", style="Title.TLabel").pack(anchor="w")
-        self.subtitle = ttk.Label(outer, text="校园能源调度观察台 / Offline dispatch workspace",
-                                  style="Sub.TLabel")
-        self.subtitle.pack(anchor="w", fill="x", pady=(0, 18))
+
+        self._history_viewport = tk.Canvas(
+            self._history_content_frame, bg=PAPER, highlightthickness=0)
+        self._history_viewport.pack(side="left", fill="both", expand=True)
+        history_scrollbar = ttk.Scrollbar(
+            self._history_content_frame, orient="vertical",
+            command=self._history_viewport.yview)
+        history_scrollbar.pack(side="right", fill="y")
+        self._history_viewport.configure(yscrollcommand=history_scrollbar.set)
+        history_outer = ttk.Frame(self._history_viewport, padding=18)
+        self._history_content = self._history_viewport.create_window(
+            (0, 0), window=history_outer, anchor="nw")
+        self._history_viewport.bind("<Configure>", self._resize_history_viewport)
+        history_outer.bind(
+            "<Configure>", lambda _event: self._history_viewport.configure(
+                scrollregion=self._history_viewport.bbox("all")))
+        self._history_viewport.bind("<MouseWheel>", self._scroll_history_page)
+        history_outer.bind("<MouseWheel>", self._scroll_history_page)
 
         controls = ttk.Frame(outer)
         controls.pack(fill="x")
@@ -400,29 +446,33 @@ class EnergyDesktop:
             preset_area, textvariable=self.selected_preset, state="readonly", width=28)
         self.preset_combo.grid(row=0, column=1, sticky="ew", padx=(8, 0))
         preset_actions = ttk.Frame(preset_area)
-        preset_actions.grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        preset_actions.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         self.save_preset_button = ttk.Button(
             preset_actions, text="保存为 / Save as", command=self._save_preset_as)
-        self.save_preset_button.pack(side="left")
+        self.save_preset_button.grid(row=0, column=1, sticky="ew", padx=(6, 0))
         self.load_preset_button = ttk.Button(
             preset_actions, text="加载 / Load", command=self._load_selected_preset,
             state="disabled")
-        self.load_preset_button.pack(side="left", padx=(6, 0))
+        self.load_preset_button.grid(row=0, column=0, sticky="ew")
         self.update_preset_button = ttk.Button(
             preset_actions, text="更新 / Update", command=self._update_selected_preset,
             state="disabled")
-        self.update_preset_button.pack(side="left", padx=(6, 0))
+        self.update_preset_button.grid(row=0, column=2, sticky="ew", padx=(6, 0))
         self.delete_preset_button = ttk.Button(
             preset_actions, text="删除 / Delete", command=self._delete_selected_preset,
             state="disabled")
-        self.delete_preset_button.pack(side="left", padx=(6, 0))
+        self.delete_preset_button.grid(
+            row=1, column=2, sticky="ew", padx=(6, 0), pady=(6, 0))
         self.import_preset_button = ttk.Button(
             preset_actions, text="导入 / Import", command=self._import_preset_exchange)
-        self.import_preset_button.pack(side="left", padx=(6, 0))
+        self.import_preset_button.grid(row=1, column=0, sticky="ew", pady=(6, 0))
         self.export_preset_button = ttk.Button(
             preset_actions, text="导出 / Export", command=self._export_selected_preset,
             state="disabled")
-        self.export_preset_button.pack(side="left", padx=(6, 0))
+        self.export_preset_button.grid(
+            row=1, column=1, sticky="ew", padx=(6, 0), pady=(6, 0))
+        for column in range(3):
+            preset_actions.columnconfigure(column, weight=1, uniform="preset-action")
         preset_area.columnconfigure(1, weight=1)
         ttk.Label(devices, textvariable=self.preset_notice, style="Sub.TLabel").grid(
             row=4, column=0, columnspan=4, sticky="w", pady=(5, 0))
@@ -459,9 +509,9 @@ class EnergyDesktop:
         self.cancel_button = ttk.Button(actions, text="取消 / Cancel",
                                         command=self._cancel_job, state="disabled")
         self.cancel_button.pack(side="left")
-        self.status_label = ttk.Label(actions, textvariable=self.status,
+        self.status_label = ttk.Label(outer, textvariable=self.status,
                                       style="Sub.TLabel", wraplength=450)
-        self.status_label.pack(side="left", padx=12, fill="x", expand=True)
+        self.status_label.pack(anchor="w", fill="x", pady=(2, 4))
         self.status_label.bind("<Configure>", lambda event: self.status_label.configure(
             wraplength=max(80, event.width - 12)))
         self.progress = ttk.Progressbar(outer, mode="indeterminate")
@@ -506,7 +556,7 @@ class EnergyDesktop:
         self.diagnostic_details.configure(
             yscrollcommand=diagnostic_scroll.set, state="disabled")
 
-        history = ttk.Frame(outer)
+        history = ttk.Frame(history_outer)
         history.pack(fill="x", pady=(8, 12))
         ttk.Label(history, text="本地运行根目录 / Local runs root").grid(
             row=0, column=0, columnspan=5, sticky="w")
@@ -553,13 +603,21 @@ class EnergyDesktop:
                 column, text=heading,
                 command=lambda key=sort_key: self._sort_history(key))
             self.history_table.column(
-                column, width=width, minwidth=90,
+                column, width=width, minwidth=180 if column == "name" else 90,
+                stretch=column == "name",
                 anchor="w" if column in ("name", "mode") else "center")
-        self.history_table.pack(side="left", fill="both", expand=True)
-        history_scroll = ttk.Scrollbar(
+        self.history_table.grid(row=0, column=0, sticky="nsew")
+        self.history_vertical_scrollbar = ttk.Scrollbar(
             history_table_frame, orient="vertical", command=self.history_table.yview)
-        history_scroll.pack(side="right", fill="y")
-        self.history_table.configure(yscrollcommand=history_scroll.set)
+        self.history_vertical_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.history_horizontal_scrollbar = ttk.Scrollbar(
+            history_table_frame, orient="horizontal", command=self.history_table.xview)
+        self.history_horizontal_scrollbar.grid(row=1, column=0, sticky="ew")
+        history_table_frame.rowconfigure(0, weight=1)
+        history_table_frame.columnconfigure(0, weight=1)
+        self.history_table.configure(
+            xscrollcommand=self.history_horizontal_scrollbar.set,
+            yscrollcommand=self.history_vertical_scrollbar.set)
         self.load_button = ttk.Button(history, text="读取所选 / Load selected",
                                       command=self._load_history, state="disabled")
         self.load_button.grid(row=7, column=4, padx=(8, 0), sticky="n")
@@ -718,10 +776,19 @@ class EnergyDesktop:
     def _scroll_page(self, event):
         self._viewport.yview_scroll(-1 if event.delta > 0 else 1, "units")
 
+    def _scroll_history_page(self, event):
+        self._history_viewport.yview_scroll(-1 if event.delta > 0 else 1, "units")
+
+    def _active_workflow_viewport(self):
+        if self.workflow_notebook.select() == str(self.history_tab):
+            return self._history_viewport
+        return self._viewport
+
     def _scroll_keyboard(self, event):
         if isinstance(event.widget, tk.Text):
             return None  # Keep the log's own Page Up/Down navigation.
-        self._viewport.yview_scroll(1 if event.keysym == "Next" else -1, "pages")
+        self._active_workflow_viewport().yview_scroll(
+            1 if event.keysym == "Next" else -1, "pages")
         return "break"
 
     def _resize_viewport(self, event):
@@ -737,6 +804,9 @@ class EnergyDesktop:
         if self.notebook.winfo_reqwidth() > event.width - 36:
             for index, title in enumerate(compact):
                 self.notebook.tab(index, text=title)
+
+    def _resize_history_viewport(self, event):
+        self._history_viewport.itemconfigure(self._history_content, width=event.width)
 
     def _relayout_metric_cards(self, _event=None):
         if not self._cards:

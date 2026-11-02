@@ -81,6 +81,116 @@ def test_close_removes_scheduled_tk_poll_callback():
     assert poll_id not in root.tk.call("after", "info")
 
 
+def test_workflow_tabs_separate_current_run_and_history_without_mutating_state():
+    root, app = new_desktop()
+
+    def is_descendant(widget, ancestor):
+        current = widget
+        while current is not None:
+            if current == ancestor:
+                return True
+            parent_name = current.winfo_parent()
+            current = current.nametowidget(parent_name) if parent_name else None
+        return False
+
+    try:
+        entry = RunHistoryEntry("synthetic-run", "VALID", "verified", "cost", None)
+        app._history_entries[entry.name] = entry
+        app.history_table.insert(
+            "", "end", iid=entry.name,
+            values=(entry.name, entry.status, "纯电费 / Cost-only", "—"))
+        app.workflow_notebook.select(app.history_tab)
+        app.history_table.selection_set(entry.name)
+        app.history_table.focus(entry.name)
+        root.update()
+        app.workflow_notebook.select(app.configure_tab)
+        root.update()
+        app.selected_preset.set("Synthetic preset")
+        chart = {"synthetic": "current result"}
+        app.chart = chart
+        before = {
+            "path": app.path.get(),
+            "step": app.step.get(),
+            "devices": tuple(value.get() for value in app.device_values.values()),
+            "mode": app.optimization_mode.get(),
+            "cap": app.peak_cap.get(),
+            "preset": app.selected_preset.get(),
+            "run": app.selected_run.get(),
+            "history_selection": app.history_table.selection(),
+            "history_focus": app.history_table.focus(),
+            "generation": app._generation,
+            "imported": app.imported,
+        }
+
+        tabs = app.workflow_notebook.tabs()
+        assert len(tabs) == 2
+        assert app.workflow_notebook.tab(tabs[0], "text") == (
+            "配置与运行 / Configure & Run")
+        assert app.workflow_notebook.tab(tabs[1], "text") == (
+            "历史与报告 / History & Reports")
+        assert is_descendant(app.check_button, app.configure_tab)
+        assert is_descendant(app.notebook, app.configure_tab)
+        assert is_descendant(app.history_table, app.history_tab)
+        assert is_descendant(app.export_comparison_button, app.history_tab)
+
+        app.workflow_notebook.select(app.history_tab)
+        root.update()
+        app.workflow_notebook.select(app.configure_tab)
+        root.update()
+
+        assert app.path.get() == before["path"]
+        assert app.step.get() == before["step"]
+        assert tuple(value.get() for value in app.device_values.values()) == before["devices"]
+        assert app.optimization_mode.get() == before["mode"]
+        assert app.peak_cap.get() == before["cap"]
+        assert app.selected_preset.get() == before["preset"]
+        assert app.selected_run.get() == before["run"]
+        assert app.history_table.selection() == before["history_selection"]
+        assert app.history_table.focus() == before["history_focus"]
+        assert app._generation == before["generation"]
+        assert app.imported is before["imported"]
+        assert app.chart is chart
+    finally:
+        close_desktop(root, app)
+
+
+def test_workflow_tab_switch_during_background_run_preserves_job_generation(monkeypatch):
+    root, app = new_desktop()
+    started = threading.Event()
+    release = threading.Event()
+
+    def delayed_failure(_imported, **_kwargs):
+        started.set()
+        release.wait(2)
+        raise DashboardError("synthetic failure after workflow tab switch")
+
+    monkeypatch.setattr(desktop, "run_comparison", delayed_failure)
+    try:
+        app._run()
+        pump(root, started.is_set)
+        generation = app._generation
+
+        app.workflow_notebook.select(app.history_tab)
+        root.update()
+        assert app._generation == generation
+        assert app._active_kind == "run"
+        assert app.cancel_button.instate(["!disabled"])
+
+        app.workflow_notebook.select(app.configure_tab)
+        root.update()
+        assert app._generation == generation
+        assert app._active_kind == "run"
+
+        release.set()
+        pump(root, lambda: app._active_kind is None)
+        assert app._generation == generation
+        assert "失败" in app.status.get() or "failed" in app.status.get()
+        assert app.chart is None
+    finally:
+        release.set()
+        close_desktop(root, app)
+
+
 def test_quality_panel_shows_validated_input_summary_and_equipment_scope():
     root, app = new_desktop()
     try:
@@ -829,6 +939,161 @@ def test_quality_summary_remains_visible_but_run_is_blocked_above_desktop_limit(
         close_desktop(root, app)
 
 
+@pytest.mark.parametrize("factor", [1.0, 1.5, 2.0])
+def test_preset_actions_use_two_rows_without_clipping_at_dpi_scales(factor):
+    global _interpreter
+    if _interpreter is None:
+        _interpreter = tk.Tk()
+        _interpreter.withdraw()
+    original = float(_interpreter.tk.call("tk", "scaling"))
+    root = None
+    try:
+        _interpreter.tk.call("tk", "scaling", original * factor)
+        root, app = new_desktop()
+        root.geometry("900x650")
+        root.deiconify()
+        root.update()
+
+        expected = (
+            (app.load_preset_button, 0, 0),
+            (app.save_preset_button, 0, 1),
+            (app.update_preset_button, 0, 2),
+            (app.import_preset_button, 1, 0),
+            (app.export_preset_button, 1, 1),
+            (app.delete_preset_button, 1, 2),
+        )
+        for button, row, column in expected:
+            info = button.grid_info()
+            assert int(info["row"]) == row
+            assert int(info["column"]) == column
+            assert button.winfo_width() >= button.winfo_reqwidth() - 2
+            assert button.winfo_rootx() + button.winfo_width() <= (
+                app._viewport.winfo_rootx() + app._viewport.winfo_width())
+    finally:
+        if root is not None:
+            close_desktop(root, app)
+        _interpreter.tk.call("tk", "scaling", original)
+
+
+def test_history_table_has_bound_scrollbars_and_both_axes_are_reachable():
+    root, app = new_desktop()
+    try:
+        root.minsize(500, 650)
+        root.geometry("500x650")
+        root.deiconify()
+        app.workflow_notebook.select(app.history_tab)
+        for index in range(20):
+            name = f"synthetic-history-{index:02d}-with-a-long-run-identifier"
+            app.history_table.insert(
+                "", "end", iid=name,
+                values=(name, "VALID", "纯电费 / Cost-only", "—"))
+        root.update()
+
+        assert app.history_horizontal_scrollbar.cget("command")
+        assert app.history_vertical_scrollbar.cget("command")
+        assert app.history_table.cget("xscrollcommand")
+        assert app.history_table.cget("yscrollcommand")
+        assert bool(int(app.history_table.column("name", "stretch")))
+        for column in ("status", "mode", "peak_cap"):
+            assert not bool(int(app.history_table.column(column, "stretch")))
+
+        before_x = app.history_table.xview()
+        app.history_table.xview_moveto(1)
+        root.update()
+        after_x = app.history_table.xview()
+        assert after_x[0] > before_x[0]
+        assert app.history_horizontal_scrollbar.get() == pytest.approx(after_x)
+
+        before_y = app.history_table.yview()
+        app.history_table.yview_moveto(1)
+        root.update()
+        after_y = app.history_table.yview()
+        assert after_y[0] > before_y[0]
+        assert app.history_vertical_scrollbar.get() == pytest.approx(after_y)
+    finally:
+        close_desktop(root, app)
+
+
+def test_history_workflow_mirrors_shared_status_without_changing_generation(monkeypatch):
+    root, app = new_desktop()
+    try:
+        original_status = app.status
+        original_generation = app._generation
+        monkeypatch.setattr(app, "_start_job", lambda _kind, _work: None)
+
+        root.geometry("900x650")
+        root.deiconify()
+        app.workflow_notebook.select(app.history_tab)
+        root.update()
+
+        status_parent = app.history_status_label.nametowidget(
+            app.history_status_label.winfo_parent())
+        assert status_parent == app.history_tab
+        app._history_viewport.yview_moveto(1)
+        root.update()
+        assert app._history_viewport.yview()[0] > 0
+        tab_top = app.history_tab.winfo_rooty()
+        tab_bottom = tab_top + app.history_tab.winfo_height()
+        status_top = app.history_status_label.winfo_rooty()
+        status_bottom = status_top + app.history_status_label.winfo_height()
+        assert tab_top <= status_top < status_bottom <= tab_bottom
+
+        assert str(app.status_label.cget("textvariable")) == str(original_status)
+        assert str(app.history_status_label.cget("textvariable")) == str(original_status)
+
+        checks = (
+            (app._refresh_history,
+             "正在核验运行历史 / Verifying run history…"),
+            (app._preview_history,
+             "请选择有效运行并检查当前输入 / Select a valid run and check current input"),
+            (app._compare_history,
+             "请选择两个不同的有效运行 / Select two distinct valid runs"),
+            (app._export_selected_run,
+             "请选择有效运行 / Select a valid run"),
+        )
+        for action, expected in checks:
+            action()
+            root.update_idletasks()
+            assert app.status.get() == expected
+            assert app.status_label.cget("text") == expected
+            assert app.history_status_label.cget("text") == expected
+
+        app.workflow_notebook.select(app.configure_tab)
+        root.update_idletasks()
+        app.workflow_notebook.select(app.history_tab)
+        root.update_idletasks()
+        assert app.status is original_status
+        assert app._generation == original_generation
+        assert app.status_label.cget("text") == app.history_status_label.cget("text")
+    finally:
+        close_desktop(root, app)
+
+
+def test_long_run_status_uses_full_row_without_squeezing_action_buttons():
+    root, app = new_desktop()
+    try:
+        root.geometry("900x650")
+        root.deiconify()
+        app.status.set(
+            "运行状态包含可定位的完整失败原因和下一步检查建议 / "
+            "The run status contains a complete failure reason and suggested next checks. " * 3)
+        root.update()
+
+        action_parent = app.check_button.nametowidget(app.check_button.winfo_parent())
+        status_parent = app.status_label.nametowidget(app.status_label.winfo_parent())
+        assert status_parent != action_parent
+        button_bottom = max(
+            button.winfo_rooty() + button.winfo_height()
+            for button in (app.check_button, app.run_button, app.cancel_button))
+        assert app.status_label.winfo_rooty() >= button_bottom
+        assert app.status_label.winfo_width() >= (
+            app._viewport.winfo_width() - 48)
+        for button in (app.check_button, app.run_button, app.cancel_button):
+            assert button.winfo_width() >= button.winfo_reqwidth() - 2
+    finally:
+        close_desktop(root, app)
+
+
 @pytest.mark.parametrize("factor", [1.0, 1.25, 1.5, 2.0])
 def test_minimum_window_keeps_charts_and_metric_cards_usable_at_dpi_scales(factor):
     global _interpreter
@@ -962,28 +1227,46 @@ def test_read_only_log_is_keyboard_reachable_and_page_can_scroll():
         root.geometry("900x650")
         root.deiconify()
         root.update()
+
         widget = app.check_button
-        seen = set()
+        configure_seen = set()
         for _ in range(20):
             widget = widget.tk_focusNext()
-            seen.add(str(widget))
-        assert str(app.quality) in seen
-        assert str(app.run_button) in seen
-        assert str(app.history_search_entry) in seen
-        assert str(app.history_status_combo) in seen
-        assert str(app.history_mode_combo) in seen
-        assert str(app.clear_history_filters_button) in seen
-        assert str(app.history_table) in seen
-        assert str(app.compare_a_combo) in seen
-        assert str(app.compare_b_combo) in seen
-        assert str(app.comparison_table) in seen
-        assert app.quality.tk_focusPrev() == app.comparison_table
+            configure_seen.add(str(widget))
+        assert str(app.quality) in configure_seen
+        assert str(app.run_button) in configure_seen
+        assert str(app.history_search_entry) not in configure_seen
+
         app.check_button.focus_set()
         root.update()
         before = app._viewport.yview()[0]
         app.check_button.event_generate("<Next>")
         root.update()
         assert app._viewport.yview()[0] > before
+
+        app.workflow_notebook.select(app.history_tab)
+        root.update()
+        widget = app.history_search_entry
+        history_seen = {str(widget)}
+        for _ in range(20):
+            widget = widget.tk_focusNext()
+            history_seen.add(str(widget))
+        assert str(app.history_search_entry) in history_seen
+        assert str(app.history_status_combo) in history_seen
+        assert str(app.history_mode_combo) in history_seen
+        assert str(app.clear_history_filters_button) in history_seen
+        assert str(app.history_table) in history_seen
+        assert str(app.compare_a_combo) in history_seen
+        assert str(app.compare_b_combo) in history_seen
+        assert str(app.comparison_table) in history_seen
+        assert str(app.quality) not in history_seen
+
+        app.history_search_entry.focus_set()
+        root.update()
+        before = app._history_viewport.yview()[0]
+        app.history_search_entry.event_generate("<Next>")
+        root.update()
+        assert app._history_viewport.yview()[0] > before
     finally:
         close_desktop(root, app)
 
