@@ -975,6 +975,7 @@ class EnergyDesktop:
         self.selected_run.set("")
         self._clear_history_comparison()
         self.cancel_button.configure(state="disabled")
+        self._sync_policy_controls()
         self.status.set("输入已改变，请重新检查 / Input changed; check again")
         self._clear_results()
         self._quality_text("数据与运行日志 / Data and run log\n等待检查 / Awaiting check")

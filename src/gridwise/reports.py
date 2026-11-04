@@ -459,33 +459,62 @@ def publish_html_report(target: Path, payload: bytes, *, overwrite: bool = False
             raise ReportError(f"report target already exists: {path}")
 
     temporary = parent / f".gridwise-report-{uuid.uuid4().hex}.tmp"
+    publish_error = None
+    cleanup_error = None
+    published = False
+    result = None
     try:
         with temporary.open("xb") as stream:
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-        def replace():
-            if not overwrite and os.path.lexists(path):
-                raise ReportError(f"report target appeared before publication: {path}")
-            os.replace(temporary, path)
+
+        def publish():
+            nonlocal published
+            if overwrite:
+                os.replace(temporary, path)
+            else:
+                try:
+                    os.link(temporary, path, follow_symlinks=False)
+                except FileExistsError as exc:
+                    raise ReportError(f"report target already exists: {path}") from exc
+            published = True
             return path
 
         if isinstance(cancel_event, ReportCancellation):
-            return cancel_event.commit(replace)
-        _cancelled(cancel_event)
-        return replace()
+            result = cancel_event.commit(publish)
+        else:
+            _cancelled(cancel_event)
+            result = publish()
     except Exception as exc:
+        publish_error = exc
+    finally:
         try:
             if os.path.lexists(temporary):
                 temporary.unlink()
-        except Exception as cleanup_error:
-            residual = temporary.resolve(strict=False)
+        except Exception as exc:
+            cleanup_error = exc
+
+    if cleanup_error is not None:
+        residual = temporary.resolve(strict=False)
+        if publish_error is not None:
             raise ReportError(
-                f"report export failed: {exc}; cleanup failed: {cleanup_error}; "
-                f"residual temporary file: {residual}") from exc
-        if isinstance(exc, ReportError):
-            raise
-        raise ReportError(f"report export failed: {exc}") from exc
+                f"report export failed: {publish_error}; "
+                f"cleanup failed: {cleanup_error}; "
+                f"residual temporary file: {residual}") from publish_error
+        if published:
+            raise ReportError(
+                f"report was published to {path}, but cleanup failed: "
+                f"{cleanup_error}; residual temporary file: {residual}") \
+                from cleanup_error
+        raise ReportError(
+            f"report temporary cleanup failed: {cleanup_error}; "
+            f"residual temporary file: {residual}") from cleanup_error
+    if publish_error is not None:
+        if isinstance(publish_error, ReportError):
+            raise publish_error
+        raise ReportError(f"report export failed: {publish_error}") from publish_error
+    return result
 
 
 def _cancelled(cancel_event) -> None:

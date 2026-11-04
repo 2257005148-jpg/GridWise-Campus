@@ -250,6 +250,7 @@ def test_html_report_publication_is_atomic_and_refuses_existing_or_directory(tmp
 
     assert reports.publish_html_report(target, payload) == target
     assert target.read_bytes() == payload
+    assert list(tmp_path.glob(".gridwise-report-*.tmp")) == []
 
     original = target.read_bytes()
     with pytest.raises(reports.ReportError, match="already exists"):
@@ -261,6 +262,134 @@ def test_html_report_publication_is_atomic_and_refuses_existing_or_directory(tmp
     directory.mkdir()
     with pytest.raises(reports.ReportError, match="regular file"):
         reports.publish_html_report(directory, payload, overwrite=True)
+
+
+def test_report_overwrite_still_uses_atomic_replace(tmp_path, monkeypatch):
+    target = tmp_path / "report.html"
+    target.write_bytes(b"original")
+    payload = b"<!doctype html><html><body>replacement</body></html>"
+
+    def unexpected_link(*_args, **_kwargs):
+        raise AssertionError("overwrite=True must not use hard-link publication")
+
+    monkeypatch.setattr(reports.os, "link", unexpected_link)
+
+    assert reports.publish_html_report(target, payload, overwrite=True) == target
+    assert target.read_bytes() == payload
+    assert list(tmp_path.glob(".gridwise-report-*.tmp")) == []
+
+
+def test_no_clobber_publish_rejects_target_created_at_final_operation(
+        tmp_path, monkeypatch):
+    target = tmp_path / "report.html"
+    payload = b"<!doctype html><html><body>verified</body></html>"
+    competitor = b"competitor"
+    real_link = reports.os.link
+    real_replace = reports.os.replace
+
+    def racing_link(source, destination, *args, **kwargs):
+        target.write_bytes(competitor)
+        return real_link(source, destination, *args, **kwargs)
+
+    def racing_replace(source, destination, *args, **kwargs):
+        target.write_bytes(competitor)
+        return real_replace(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(reports.os, "link", racing_link)
+    monkeypatch.setattr(reports.os, "replace", racing_replace)
+
+    with pytest.raises(reports.ReportError, match="already exists"):
+        reports.publish_html_report(target, payload)
+
+    assert target.read_bytes() == competitor
+    assert list(tmp_path.glob(".gridwise-report-*.tmp")) == []
+
+
+def test_no_clobber_fails_closed_when_hard_links_are_unavailable(
+        tmp_path, monkeypatch):
+    target = tmp_path / "report.html"
+    payload = b"<!doctype html><html><body>verified</body></html>"
+
+    def deny_link(*_args, **_kwargs):
+        raise OSError("synthetic hard-link unsupported")
+
+    def forbidden_replace(*_args, **_kwargs):
+        raise AssertionError("no-clobber publication must not fall back to replace")
+
+    monkeypatch.setattr(reports.os, "link", deny_link)
+    monkeypatch.setattr(reports.os, "replace", forbidden_replace)
+
+    with pytest.raises(reports.ReportError, match="synthetic hard-link unsupported") as caught:
+        reports.publish_html_report(target, payload)
+
+    assert isinstance(caught.value.__cause__, OSError)
+    assert not target.exists()
+    assert list(tmp_path.glob(".gridwise-report-*.tmp")) == []
+
+
+def test_no_clobber_publish_and_cleanup_double_failure_preserves_both_errors(
+        tmp_path, monkeypatch):
+    target = tmp_path / "report.html"
+    payload = b"<!doctype html><html><body>verified</body></html>"
+    real_unlink = Path.unlink
+
+    monkeypatch.setattr(
+        reports.os, "link",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("synthetic report link failure")))
+
+    def deny_private_cleanup(path, *args, **kwargs):
+        if path.name.startswith(".gridwise-report-"):
+            raise PermissionError("synthetic no-clobber cleanup denial")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", deny_private_cleanup)
+    try:
+        with pytest.raises(reports.ReportError) as caught:
+            reports.publish_html_report(target, payload)
+        residuals = list(tmp_path.glob(".gridwise-report-*.tmp"))
+        assert len(residuals) == 1
+        message = str(caught.value)
+        assert "synthetic report link failure" in message
+        assert "synthetic no-clobber cleanup denial" in message
+        assert str(residuals[0].resolve()) in message
+        assert isinstance(caught.value.__cause__, RuntimeError)
+        assert not target.exists()
+    finally:
+        monkeypatch.setattr(Path, "unlink", real_unlink)
+        for residual in tmp_path.glob(".gridwise-report-*.tmp"):
+            real_unlink(residual)
+
+
+def test_no_clobber_published_report_reports_private_cleanup_failure(
+        tmp_path, monkeypatch):
+    target = tmp_path / "report.html"
+    payload = b"<!doctype html><html><body>verified</body></html>"
+    cancellation = reports.ReportCancellation()
+    real_unlink = Path.unlink
+
+    def deny_private_cleanup(path, *args, **kwargs):
+        if path.name.startswith(".gridwise-report-"):
+            raise PermissionError("synthetic no-clobber cleanup denial")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", deny_private_cleanup)
+    try:
+        with pytest.raises(reports.ReportError, match="was published") as caught:
+            reports.publish_html_report(
+                target, payload, cancel_event=cancellation)
+        residuals = list(tmp_path.glob(".gridwise-report-*.tmp"))
+        assert len(residuals) == 1
+        message = str(caught.value)
+        assert "synthetic no-clobber cleanup denial" in message
+        assert str(residuals[0].resolve()) in message
+        assert isinstance(caught.value.__cause__, PermissionError)
+        assert target.read_bytes() == payload
+        assert cancellation.set() is False
+    finally:
+        monkeypatch.setattr(Path, "unlink", real_unlink)
+        for residual in tmp_path.glob(".gridwise-report-*.tmp"):
+            real_unlink(residual)
 
 
 def test_report_replace_and_cleanup_double_failure_preserves_original_error_and_path(

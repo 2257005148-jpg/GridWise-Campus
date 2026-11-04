@@ -827,31 +827,126 @@ def test_infeasible_peak_cap_never_shows_success(tmp_path):
 
 
 def test_input_change_discards_in_flight_success(monkeypatch, tmp_path):
-    root, app = new_desktop()
+    root, app = new_desktop(
+        config_path=tmp_path / "desktop.json",
+        preset_path=tmp_path / "scenario-presets.json")
     release = threading.Event()
     started = threading.Event()
     finished = threading.Event()
+    cancellation = {}
 
-    def delayed_success(_imported, **_kwargs):
+    def delayed_success(_imported, **kwargs):
+        cancellation["event"] = kwargs["cancel_event"]
         started.set()
         release.wait(2)
         finished.set()
         return DashboardResult({"timestamps": []}, "AUDIT PASSED")
 
     monkeypatch.setattr(desktop, "run_comparison", delayed_success)
+    monkeypatch.setattr(
+        desktop.simpledialog, "askstring", lambda *_args, **_kwargs: "Recovery preset")
     try:
+        app._save_preset_as()
         app._run()
         pump(root, started.is_set)
+        running_generation = app._generation
+        preset_buttons = (
+            app.load_preset_button, app.save_preset_button,
+            app.update_preset_button, app.import_preset_button,
+            app.export_preset_button, app.delete_preset_button)
+        assert all(button.instate(["disabled"]) for button in preset_buttons)
+        assert all(entry.instate(["disabled"]) for entry in app.device_entries.values())
+        assert app.cost_mode_button.instate(["disabled"])
+        assert app.peak_mode_button.instate(["disabled"])
+
         app.path.set(str(tmp_path / "another.csv"))
+        root.update()
+
+        assert cancellation["event"].is_set()
+        assert app._generation == running_generation + 1
+        assert app._active_kind is None
+        assert all(entry.instate(["!disabled"]) for entry in app.device_entries.values())
+        assert app.cost_mode_button.instate(["!disabled"])
+        assert app.peak_mode_button.instate(["!disabled"])
+        assert app.peak_cap_entry.instate(["disabled"])
+        assert app.preset_combo.instate(["readonly"])
+        assert all(button.instate(["!disabled"]) for button in preset_buttons)
+
         release.set()
-        pump(root, finished.is_set)
-        for _ in range(8):
-            root.update()
-            time.sleep(0.01)
+        pump(root, lambda: finished.is_set() and not app._pending_jobs)
+
+        assert app._generation == running_generation + 1
+        assert all(entry.instate(["!disabled"]) for entry in app.device_entries.values())
+        assert app.cost_mode_button.instate(["!disabled"])
+        assert app.peak_mode_button.instate(["!disabled"])
+        assert app.preset_combo.instate(["readonly"])
+        assert all(button.instate(["!disabled"]) for button in preset_buttons)
         assert app.chart is None
         assert app.input_summary is None
         assert all(label.cget("text") == "—" for pair in app.metric_labels.values()
                    for label in pair)
+        assert app.export_run_button.instate(["disabled"])
+        assert "AUDIT PASSED" not in app.status.get()
+    finally:
+        release.set()
+        close_desktop(root, app)
+
+
+@pytest.mark.parametrize("change", ("device", "policy"))
+def test_active_configuration_change_restores_controls_and_rejects_stale_result(
+        monkeypatch, tmp_path, change):
+    root, app = new_desktop(
+        config_path=tmp_path / "desktop.json",
+        preset_path=tmp_path / "scenario-presets.json")
+    release = threading.Event()
+    started = threading.Event()
+    cancellation = {}
+
+    def delayed_success(_imported, **kwargs):
+        cancellation["event"] = kwargs["cancel_event"]
+        started.set()
+        release.wait(2)
+        return DashboardResult({"timestamps": []}, "AUDIT PASSED")
+
+    monkeypatch.setattr(desktop, "run_comparison", delayed_success)
+    monkeypatch.setattr(
+        desktop.simpledialog, "askstring", lambda *_args, **_kwargs: "Recovery preset")
+    try:
+        app._save_preset_as()
+        checked_input = app.imported
+        app._run()
+        pump(root, started.is_set)
+        running_generation = app._generation
+
+        if change == "device":
+            app.device_values["capacity_kwh"].set("61")
+        else:
+            app.optimization_mode.set("peak_cap")
+        root.update()
+
+        assert cancellation["event"].is_set()
+        assert app._generation == running_generation + 1
+        assert app._active_kind is None
+        assert app.imported is checked_input
+        assert all(entry.instate(["!disabled"]) for entry in app.device_entries.values())
+        assert app.cost_mode_button.instate(["!disabled"])
+        assert app.peak_mode_button.instate(["!disabled"])
+        assert app.peak_cap_entry.instate(
+            ["!disabled"] if change == "policy" else ["disabled"])
+        assert app.preset_combo.instate(["readonly"])
+        assert all(button.instate(["!disabled"]) for button in (
+            app.load_preset_button, app.save_preset_button,
+            app.update_preset_button, app.import_preset_button,
+            app.export_preset_button, app.delete_preset_button))
+        assert app.run_button.instate(["!disabled"])
+
+        release.set()
+        pump(root, lambda: not app._pending_jobs)
+
+        assert app._generation == running_generation + 1
+        assert app._active_kind is None
+        assert app.chart is None
+        assert app.export_run_button.instate(["disabled"])
         assert "AUDIT PASSED" not in app.status.get()
     finally:
         release.set()
