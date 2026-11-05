@@ -4,6 +4,8 @@ import math
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
 from gridwise.device import (DEVICE_FIELDS, DeviceParameterError,
                              DeviceParameters, parse_device_parameters)
 

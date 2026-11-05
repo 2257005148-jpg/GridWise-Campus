@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.integration
+
 from gridwise.run_storage import RunStorageError, load_saved_runs_root, save_runs_root
 
 

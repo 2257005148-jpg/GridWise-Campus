@@ -5,6 +5,8 @@ import sys
 
 import pytest
 
+pytestmark = pytest.mark.gui
+
 if sys.platform != "win32":
     pytest.skip("Windows Tk focus probe", allow_module_level=True)
 

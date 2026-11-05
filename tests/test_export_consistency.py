@@ -5,7 +5,12 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 from gridwise.cli import EXPORT_NAMES
+
+
+pytestmark = pytest.mark.integration
 
 
 ROOT = Path(__file__).resolve().parents[1]

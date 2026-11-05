@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.integration
+
 from gridwise import dashboard, run_artifacts
 from gridwise.data import import_energy_csv
 from gridwise.desktop import CHARTS, chart_values

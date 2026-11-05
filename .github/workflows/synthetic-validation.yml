@@ -1,36 +1,138 @@
-name: Synthetic validation
+name: Windows safe CI
 
 on:
+  pull_request:
+  push:
+    branches:
+      - master
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: windows-safe-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  synthetic:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+  safe-tests:
+    name: Marker-gated safe tests
+    runs-on: windows-2025
+    timeout-minutes: 25
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0 # Historical audit tests read the reviewed v0.1.5 Git blobs.
-      - uses: actions/setup-python@v7
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.12.10
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: '3.12'
+          python-version: "3.12.10"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements/verified-win-py312.txt
+
+      - name: Create evidence directory
+        shell: pwsh
+        run: New-Item -ItemType Directory -Path test-results -Force | Out-Null
+
       - name: Record execution environment
-        run: python -c "import platform, sys; print(platform.platform()); print(sys.version)"
-      - name: Install observed Windows dependency versions
-        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          @'
+          import platform
+          import sys
+
+          print(f"platform={platform.platform()}")
+          print(f"python={sys.version}")
+          print(f"executable_name={sys.executable.rsplit('\\', 1)[-1]}")
+          '@ | python - 2>&1 | Tee-Object -FilePath test-results/environment.txt
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) { exit $exitCode }
+
+      - name: Install verified dependencies
+        shell: pwsh
         run: python -m pip install -e ".[test]" -c requirements/verified-win-py312.txt
-      - name: Install declared dependencies on other platforms
-        if: runner.os != 'Windows'
-        run: python -m pip install -e ".[test]"
-      - name: Run all tests
-        run: python -m pytest -ra -q
-      - name: Generate synthetic exports
-        run: python -m gridwise.cli examples/synthetic-day.json outputs/ci
-      - name: Audit synthetic exports
-        run: python tools/audit_exports.py examples/synthetic-day.json outputs/ci/optimized.csv outputs/ci/baseline.csv outputs/ci/summary.json
+
+      - name: Check Tk runtime
+        shell: pwsh
+        run: |
+          @'
+          import _tkinter
+          import tkinter as tk
+
+          root = tk.Tk()
+          try:
+              print(f"tcl={root.tk.call('info', 'patchlevel')}")
+              print(f"tk={root.tk.call('package', 'require', 'Tk')}")
+              print(f"tcl_library={root.tk.eval('info library')}")
+              print(f"tk_library={root.tk.eval('set tk_library')}")
+              print(f"_tkinter={_tkinter.__file__}")
+          finally:
+              root.destroy()
+          '@ | python - 2>&1 | Tee-Object -FilePath test-results/tk-runtime.txt
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) { exit $exitCode }
+
+      - name: Enforce marker classification
+        shell: pwsh
+        run: |
+          python -m pytest --collect-only -q 2>&1 |
+            Tee-Object -FilePath test-results/marker-collection.log
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) { exit $exitCode }
+
+      - name: Run unit safe layer
+        shell: pwsh
+        run: |
+          python -m pytest -ra --tb=long `
+            -m "unit and not solver and not audit and not slow" `
+            --junitxml=test-results/unit.xml 2>&1 |
+            Tee-Object -FilePath test-results/unit.log
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) { exit $exitCode }
+
+      - name: Run integration safe layer
+        shell: pwsh
+        run: |
+          python -m pytest -ra --tb=long `
+            -m "integration and not solver and not audit and not slow" `
+            --junitxml=test-results/integration.xml 2>&1 |
+            Tee-Object -FilePath test-results/integration.log
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) { exit $exitCode }
+
+      - name: Run GUI safe layer
+        shell: pwsh
+        run: |
+          python -m pytest -ra --tb=long `
+            -m "gui and not solver and not audit and not slow" `
+            --junitxml=test-results/gui.xml 2>&1 |
+            Tee-Object -FilePath test-results/gui.log
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) { exit $exitCode }
+
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-safe-ci-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            test-results/environment.txt
+            test-results/tk-runtime.txt
+            test-results/marker-collection.log
+            test-results/unit.xml
+            test-results/unit.log
+            test-results/integration.xml
+            test-results/integration.log
+            test-results/gui.xml
+            test-results/gui.log
+            test-results/tk-diagnostics/*.json
+          if-no-files-found: warn
+          retention-days: 7

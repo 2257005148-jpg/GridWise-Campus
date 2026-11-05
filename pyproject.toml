@@ -21,3 +21,12 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+addopts = "--strict-markers"
+markers = [
+    "unit: isolated in-process logic without Tk, subprocess, real solver, or independent auditor",
+    "gui: Tk/Tcl widget, window, event-loop, or desktop-state behavior",
+    "integration: filesystem, subprocess, persistence, publication, or cross-module behavior",
+    "solver: may invoke the real Pyomo SolverFactory or a real solver subprocess",
+    "audit: may start or validate an independent export/history audit workflow",
+    "slow: intentionally repeated, multi-process, timeout, or long-running behavior",
+]

@@ -11,6 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.gui
+
 if sys.platform != "win32":
     pytest.skip("Tk desktop interactions are verified on Windows", allow_module_level=True)
 
@@ -1205,6 +1207,12 @@ def test_minimum_window_keeps_charts_and_metric_cards_usable_at_dpi_scales(facto
         root.update()
         assert app.notebook.winfo_height() >= 200
         assert app.notebook.winfo_reqwidth() <= app.notebook.winfo_width()
+        titles = tuple(app.notebook.tab(index, "text") for index in range(5))
+        if factor == 1.0:
+            assert titles == tuple(specification[0] for specification in desktop.CHARTS)
+        elif factor == 2.0:
+            assert titles == (
+                "能源 / Energy", "购电 / Grid", "逐时 / Period", "累计 / Total", "SOC")
         for card in app._cards:
             assert card.winfo_width() >= card.winfo_reqwidth() - 2
         assert app.run_button.winfo_rootx() + app.run_button.winfo_width() <= (
@@ -1218,6 +1226,88 @@ def test_minimum_window_keeps_charts_and_metric_cards_usable_at_dpi_scales(facto
             app._viewport.winfo_rooty() + app._viewport.winfo_height())
         assert app.notebook.winfo_rooty() + app.notebook.winfo_height() > (
             app._viewport.winfo_rooty())
+    finally:
+        if root is not None:
+            close_desktop(root, app)
+        _interpreter.tk.call("tk", "scaling", original)
+
+
+def test_double_scaling_chart_tabs_are_stable_and_keyboard_reachable():
+    global _interpreter
+    if _interpreter is None:
+        _interpreter = tk.Tk()
+        _interpreter.withdraw()
+    original = float(_interpreter.tk.call("tk", "scaling"))
+    root = None
+    try:
+        _interpreter.tk.call("tk", "scaling", original * 2)
+        root, app = new_desktop()
+        root.geometry("900x650")
+        root.deiconify()
+        root.update()
+        expected = ("能源 / Energy", "购电 / Grid", "逐时 / Period", "累计 / Total", "SOC")
+
+        states = []
+        for width in (900, 901, 900, 901, 900):
+            root.geometry(f"{width}x650")
+            root.update()
+            states.append(tuple(app.notebook.tab(index, "text") for index in range(5)))
+        assert states == [expected] * len(states)
+        assert app.notebook.winfo_reqwidth() <= app.notebook.winfo_width()
+
+        app.notebook.select(0)
+        app.notebook.focus_set()
+        root.update()
+        for _ in range(4):
+            app.notebook.event_generate("<Control-Tab>")
+            root.update()
+        assert app.notebook.index("current") == 4
+    finally:
+        if root is not None:
+            close_desktop(root, app)
+        _interpreter.tk.call("tk", "scaling", original)
+
+
+def test_repeated_double_scaling_windows_close_without_layout_callbacks():
+    global _interpreter
+    if _interpreter is None:
+        _interpreter = tk.Tk()
+        _interpreter.withdraw()
+    original = float(_interpreter.tk.call("tk", "scaling"))
+    try:
+        _interpreter.tk.call("tk", "scaling", original * 2)
+        before = set(_interpreter.tk.splitlist(_interpreter.tk.call("after", "info")))
+        for _ in range(3):
+            root, app = new_desktop()
+            root.geometry("900x650")
+            root.deiconify()
+            root.update()
+            poll_id = app._poll_id
+            close_desktop(root, app)
+            pending = set(_interpreter.tk.splitlist(_interpreter.tk.call("after", "info")))
+            assert poll_id not in pending
+        assert set(_interpreter.tk.splitlist(_interpreter.tk.call("after", "info"))) == before
+    finally:
+        _interpreter.tk.call("tk", "scaling", original)
+
+
+def test_double_scaling_settles_on_compact_chart_titles():
+    global _interpreter
+    if _interpreter is None:
+        _interpreter = tk.Tk()
+        _interpreter.withdraw()
+    original = float(_interpreter.tk.call("tk", "scaling"))
+    root = None
+    try:
+        _interpreter.tk.call("tk", "scaling", original * 2)
+        root, app = new_desktop()
+        root.geometry("900x650")
+        root.deiconify()
+        root.update()
+
+        assert tuple(app.notebook.tab(index, "text") for index in range(5)) == (
+            "能源 / Energy", "购电 / Grid", "逐时 / Period", "累计 / Total", "SOC")
+        assert app.notebook.winfo_reqwidth() <= app.notebook.winfo_width()
     finally:
         if root is not None:
             close_desktop(root, app)

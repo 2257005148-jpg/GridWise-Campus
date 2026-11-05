@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.integration
+
 from gridwise.cli import run
 from gridwise.core import InputError, SolverError, parse_scenario, solve, validate_result
 from gridwise.run_artifacts import RunArtifactError, publish_run, read_verified_run

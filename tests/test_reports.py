@@ -8,6 +8,8 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
+pytestmark = pytest.mark.integration
+
 from gridwise import dashboard, reports
 from gridwise.data import import_energy_csv
 from gridwise.dashboard import (ComparedRun, ComparisonMetrics,

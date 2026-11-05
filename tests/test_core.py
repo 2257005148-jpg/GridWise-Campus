@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.integration
+
 from gridwise.core import InputError, SolverError, parse_scenario, solve, validate_result
 from gridwise.cli import run
 

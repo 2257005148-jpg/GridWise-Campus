@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.integration
+
 from gridwise.cli import run
 from gridwise.environment import run_environment
 

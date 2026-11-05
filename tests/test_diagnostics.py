@@ -4,6 +4,8 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
 from gridwise.diagnostics import (FailureCategory, FailureStage,
                                   diagnose_failure)
 from gridwise.run_artifacts import RunArtifactError

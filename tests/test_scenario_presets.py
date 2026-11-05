@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.integration
+
 from gridwise.device import DeviceParameters
 from gridwise.scenario_presets import (MAX_FILE_BYTES, MAX_PRESETS,
                                        OptimizationPolicy, ScenarioPreset,

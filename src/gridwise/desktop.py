@@ -273,6 +273,7 @@ class EnergyDesktop:
         self._pending_jobs = set()
         self._cards = []
         self._card_columns = None
+        self._resizing_viewport = False
         self._style()
         self._layout()
         if self._config_error:
@@ -316,6 +317,9 @@ class EnergyDesktop:
                                                 ("disabled", "#A8B8B9")])
         style.configure("TNotebook", background=PAPER, borderwidth=0)
         style.configure("TNotebook.Tab", padding=(12, 9),
+                        font=("Microsoft YaHei UI", 9))
+        style.configure("Charts.TNotebook", background=PAPER, borderwidth=0)
+        style.configure("Charts.TNotebook.Tab", padding=(10, 9),
                         font=("Microsoft YaHei UI", 9))
 
     def _layout(self):
@@ -756,7 +760,7 @@ class EnergyDesktop:
         self.policy_result_label.pack(anchor="w", fill="x", pady=(0, 10))
 
         chart_height = max(300, round(300 * float(self.root.tk.call("tk", "scaling")) / 1.333))
-        self.notebook = ttk.Notebook(outer, height=chart_height)
+        self.notebook = ttk.Notebook(outer, height=chart_height, style="Charts.TNotebook")
         self.notebook.pack(fill="x")
         for specification in CHARTS:
             tab = ttk.Frame(self.notebook, padding=8)
@@ -792,18 +796,29 @@ class EnergyDesktop:
         return "break"
 
     def _resize_viewport(self, event):
-        self._viewport.itemconfigure(self._content, width=event.width)
-        text_width = max(180, event.width - 48)
-        self.subtitle.configure(wraplength=text_width)
-        self.footer.configure(wraplength=text_width)
-        self._relayout_metric_cards()
-        full = [specification[0] for specification in CHARTS]
-        compact = ["能源 / Energy", "购电 / Grid", "逐时 / Period", "累计 / Total", "SOC"]
-        for index, title in enumerate(full):
-            self.notebook.tab(index, text=title)
-        if self.notebook.winfo_reqwidth() > event.width - 36:
-            for index, title in enumerate(compact):
+        if self._resizing_viewport:
+            return
+        self._resizing_viewport = True
+        try:
+            self._viewport.itemconfigure(self._content, width=event.width)
+            text_width = max(180, event.width - 48)
+            self.subtitle.configure(wraplength=text_width)
+            self.footer.configure(wraplength=text_width)
+            self._relayout_metric_cards()
+            full = [specification[0] for specification in CHARTS]
+            compact = ["能源 / Energy", "购电 / Grid", "逐时 / Period", "累计 / Total", "SOC"]
+            for index, title in enumerate(full):
                 self.notebook.tab(index, text=title)
+            # Let Tk settle the geometry requested by the restored full titles.
+            # update_idletasks handles geometry only; the guard prevents a nested
+            # Configure callback from restarting this decision with stale values.
+            self.notebook.update_idletasks()
+            if self.notebook.winfo_reqwidth() > event.width - 36:
+                for index, title in enumerate(compact):
+                    self.notebook.tab(index, text=title)
+                self.notebook.update_idletasks()
+        finally:
+            self._resizing_viewport = False
 
     def _resize_history_viewport(self, event):
         self._history_viewport.itemconfigure(self._history_content, width=event.width)
