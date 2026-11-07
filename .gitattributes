@@ -1,0 +1,4 @@
+# Keep byte-hashed audit inputs stable across Windows and POSIX checkouts.
+/examples/*.json text eol=lf
+/examples/*.csv text eol=lf
+/requirements/*.txt text eol=lf

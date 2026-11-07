@@ -17,7 +17,7 @@ from gridwise.cli import run
 ROOT = Path(__file__).resolve().parents[1]
 HISTORY = ROOT / "tools" / "audit_history.py"
 sys.path.insert(0, str(ROOT / "tools"))
-BASE = "93fe6058a237472483292f2c256045de2c420fdc"
+BASE = "e7d8de5bf494af7ba2c86acd8401b639d82eb7f0"
 PATHS = ("src/gridwise/core.py", "tools/audit_exports.py",
          "requirements/verified-win-py312.txt", "pyproject.toml")
 
