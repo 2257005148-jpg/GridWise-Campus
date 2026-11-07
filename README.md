@@ -1,4 +1,4 @@
-# 长理智慧能源管理系统 / GridWise Campus
+# 高校智慧能源管理系统 / GridWise Campus
 
 面向高校的通用能源分析与优化项目。现有离线原型支持合成数据的纯电费调度、显式峰值上限调度、无储能基线、CSV 质量检查及本机交互式可视化；无学校数据接口、实时控制或认证声明。 / The offline prototype includes cost-only and explicit peak-cap dispatch, a no-storage baseline, CSV quality checks and a local interactive desktop view. It has no campus connection or control claim.
 
