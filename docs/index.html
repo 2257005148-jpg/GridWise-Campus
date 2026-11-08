@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#071522">
+<meta name="description" content="GridWise Campus：面向高校场景的离线能源分析与储能调度优化原型。">
+<title>GridWise Campus · 高校智慧能源管理系统</title>
+<link rel="icon" type="image/svg+xml" href="assets/gridwise-campus-mark.svg">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<header><div class="wrap"><nav>
+<a class="brand" href="#top"><img src="assets/gridwise-campus-mark.svg" alt=""><span>GridWise Campus</span></a>
+<div class="navlinks"><a href="#features">核心能力</a><a href="#workflow">工作流程</a><a href="#quickstart">快速开始</a><a href="#docs">技术文档</a><a href="#scope">项目边界</a></div>
+</nav></div></header>
+<main id="top" class="wrap">
+<div class="hero"><img src="assets/gridwise-campus-banner.svg" alt="GridWise Campus 项目视觉：校园建筑、光伏屋顶与储能设备的概念插画"></div>
+<div class="badges">
+<a href="https://github.com/2257005148-jpg/GridWise-Campus"><img alt="GitHub repository" src="https://img.shields.io/badge/GitHub-GridWise--Campus-111827?logo=github"></a>
+<a href="https://github.com/2257005148-jpg/GridWise-Campus/blob/master/LICENSE"><img alt="Apache 2.0 license" src="https://img.shields.io/badge/License-Apache--2.0-2ea44f"></a>
+<a href="https://www.python.org/"><img alt="Python 3.12+" src="https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white"></a>
+</div>
+<div class="intro">
+<div class="eyebrow">Offline-first · Explainable · Verifiable</div>
+<h1>让校园能源分析更清晰</h1>
+<p>面向高校场景的离线能源分析与优化原型，围绕负荷、光伏、电网购电和电池储能，探索可解释、可复核的多时段调度。</p>
+<p>GridWise Campus is an offline energy-analysis and optimization prototype for campus scenarios, focused on explainable dispatch and verifiable results.</p>
+<div class="actions">
+<a class="button primary" href="https://github.com/2257005148-jpg/GridWise-Campus">查看 GitHub 仓库 ↗</a>
+<a class="button" href="https://github.com/2257005148-jpg/GridWise-Campus/blob/master/README.md">阅读 README</a>
+<a class="button" href="https://github.com/2257005148-jpg/GridWise-Campus/issues">反馈建议</a>
+</div>
+</div>
+<section id="features">
+<div class="section-head"><div class="eyebrow">What it can do</div><h2>核心能力 · Key Features</h2><p>以当前代码实现为边界，不把规划中的能力包装成已交付功能。</p></div>
+<div class="grid">
+<article class="card"><div class="icon">⚡</div><h3>多时段调度优化</h3><p>使用 Pyomo 建模，通过 HiGHS 求解器处理光伏、电网购电与电池储能的调度问题。</p></article>
+<article class="card"><div class="icon">📊</div><h3>策略与基线对比</h3><p>支持纯电费优化、显式峰值上限策略，以及同输入无储能基线比较。</p></article>
+<article class="card"><div class="icon">🔎</div><h3>输入数据质量检查</h3><p>对 JSON/CSV 输入、单位、时间间隔、缺失值与时间完整性进行检查。</p></article>
+<article class="card"><div class="icon">🧾</div><h3>运行结果验证</h3><p>通过独立审计、运行清单与哈希校验，验证结果文件后再安全读取。</p></article>
+<article class="card"><div class="icon">🖥️</div><h3>双语桌面原型</h3><p>基于 Tkinter/ttk 的本机界面，支持数据检查、运行对比、历史记录与图表。</p></article>
+<article class="card"><div class="icon">📤</div><h3>报告与数据导出</h3><p>导出 JSON、CSV、SVG 与自包含 HTML 报告，便于本地检查和复核。</p></article>
+</div>
+</section>
+<section id="workflow">
+<div class="section-head"><div class="eyebrow">How it works</div><h2>工作流程 · Workflow</h2><p>输入、求解、审计与展示分层处理。</p></div>
+<div class="workflow">
+<div class="step">数据输入<small>JSON / CSV</small></div><div class="step">质量检查<small>Validation</small></div><div class="step">优化建模<small>Pyomo</small></div><div class="step">求解<small>HiGHS</small></div><div class="step">独立审计<small>Audit</small></div><div class="step">哈希验证<small>Manifest</small></div><div class="step">结果展示<small>Charts / HTML</small></div>
+</div>
+</section>
+<section id="quickstart">
+<div class="section-head"><div class="eyebrow">Get started</div><h2>快速开始 · Quick Start</h2><p>当前支持 Windows 11 / Windows Server 与 Python 3.12+。</p></div>
+<div class="split">
+<div class="panel"><h3>1. 克隆并安装</h3><pre>git clone https://github.com/2257005148-jpg/GridWise-Campus.git
+cd GridWise-Campus
+python -m venv .venv
+& .\.venv\Scripts\python.exe -m pip install -e .</pre></div>
+<div class="panel"><h3>2. 启动桌面原型</h3><pre>& .\.venv\Scripts\python.exe -m gridwise.desktop
+
+# 或运行合成数据示例
+& .\.venv\Scripts\python.exe -m gridwise.cli examples\synthetic-day.json outputs\sample</pre></div>
+</div>
+<p style="color:var(--muted);font-size:14px">更完整的安装、测试与使用说明请阅读仓库 README。示例数据为合成数据；运行命令不会连接学校系统。</p>
+</section>
+<section id="docs">
+<div class="section-head"><div class="eyebrow">Project knowledge</div><h2>技术文档 · Documentation</h2><p>设计契约、数据格式和运行行为的详细说明。</p></div>
+<div class="docs">
+<a href="run-artifact-contract.md">运行目录契约<span>Run artifact contract</span></a>
+<a href="custom-csv-import.md">自定义 CSV 导入<span>Custom CSV import</span></a>
+<a href="custom-device-parameters.md">设备参数配置<span>Custom device parameters</span></a>
+<a href="scenario-preset-exchange.md">场景预设交换<span>Scenario preset exchange</span></a>
+<a href="run-comparison.md">历史运行对比<span>Run comparison</span></a>
+<a href="report-export.md">HTML 报告导出<span>Report export</span></a>
+<a href="run-diagnostics.md">运行诊断<span>Run diagnostics</span></a>
+<a href="export-consistency-design.md">导出一致性设计<span>Export consistency design</span></a>
+</div>
+</section>
+<section id="scope">
+<div class="section-head"><div class="eyebrow">Honest scope</div><h2>项目状态与边界 · Status & Scope</h2></div>
+<div class="notice"><strong>当前定位：开发中的离线 Alpha 原型。</strong><br>项目不连接真实校园能源系统、不控制现场设备、不提供生产部署承诺，也不构成经认证的工程设计或节能效果保证。请勿将示例优化结果直接用于真实校园运行决策。</div>
+<div class="split" style="margin-top:18px">
+<div class="panel"><h3>当前技术栈</h3><ul><li>Python 3.12+</li><li>Pyomo + HiGHS</li><li>Tkinter / ttk</li><li>JSON / CSV</li><li>pytest 与独立结果审计</li></ul></div>
+<div class="panel"><h3>开源与贡献</h3><p>项目自有源代码采用 Apache License 2.0。第三方依赖仍受各自许可证约束。</p><p><a href="https://github.com/2257005148-jpg/GridWise-Campus/blob/master/LICENSE">许可证</a> · <a href="https://github.com/2257005148-jpg/GridWise-Campus/blob/master/THIRD_PARTY_NOTICES.md">第三方声明</a> · <a href="https://github.com/2257005148-jpg/GridWise-Campus/blob/master/CONTRIBUTING.md">贡献指南</a> · <a href="https://github.com/2257005148-jpg/GridWise-Campus/blob/master/SECURITY.md">安全政策</a></p></div>
+</div>
+</section>
+</main>
+<footer><div class="wrap foot"><span>© GridWise Campus · 高校智慧能源管理系统</span><span>Built for explainable analysis, not live equipment control. · <a href="https://github.com/2257005148-jpg/GridWise-Campus">GitHub ↗</a></span></div></footer>
+</body></html>
