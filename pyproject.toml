@@ -5,9 +5,30 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "gridwise-campus"
 version = "0.1.0"
-description = "Offline campus microgrid dispatch demonstration"
+description = "Offline campus energy analysis and battery-grid dispatch optimization prototype"
+authors = [
+    { name = "安外尔 (Anwar)", email = "smartcampusenergy@outlook.com" },
+]
+readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.12"
+keywords = ["campus-energy", "battery-dispatch", "optimization", "pyomo"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: Education",
+    "Intended Audience :: Science/Research",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+]
 dependencies = ["pyomo==6.9.5", "highspy==1.15.1"]
+
+[project.urls]
+Homepage = "https://github.com/2257005148-jpg/GridWise-Campus"
+Repository = "https://github.com/2257005148-jpg/GridWise-Campus.git"
+Issues = "https://github.com/2257005148-jpg/GridWise-Campus/issues"
 
 [project.optional-dependencies]
 test = ["pytest==8.4.2"]
