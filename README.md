@@ -18,7 +18,7 @@ Keep capability and release claims aligned with the code and verification eviden
 [![Stars](https://img.shields.io/github/stars/2257005148-jpg/GridWise-Campus?style=flat)](https://github.com/2257005148-jpg/GridWise-Campus/stargazers)
 [![Issues](https://img.shields.io/github/issues/2257005148-jpg/GridWise-Campus)](https://github.com/2257005148-jpg/GridWise-Campus/issues)
 
-[快速开始](#-快速开始) · [核心能力](#-核心能力) · [技术架构](#-技术架构) · [路线与边界](#-项目状态与边界) · [参与贡献](#-参与贡献)
+[快速开始](#quick-start) · [核心能力](#features) · [技术架构](#tech-stack) · [项目边界](#project-scope) · [参与贡献](#contributing)
 
 </div>
 
@@ -32,7 +32,7 @@ GridWise Campus is an **offline energy-analysis and optimization prototype** for
 
 > **重要边界 / Scope:** 当前项目不连接真实校园系统、不控制现场设备，也不声称已具备生产部署或行业认证能力。请使用合成数据或经授权的本地数据。
 
-## ✨ 核心能力 · Key Features
+<a id="features"></a>\n## ✨ 核心能力 · Key Features
 
 | 能力 | 说明 |
 |---|---|
@@ -58,7 +58,7 @@ flowchart LR
 
 项目将输入校验、优化求解、独立审计、运行产物发布和安全读取分层处理。界面只展示通过校验的结果；数据完整性、策略公平性和指标变化是不同的判断，不应混为一谈。
 
-## 🚀 快速开始 · Quick Start
+<a id="quick-start"></a>\n## 🚀 快速开始 · Quick Start
 
 ### 环境要求
 
@@ -116,7 +116,7 @@ python -m venv .venv
 
 不要把 `solver`、`audit` 或 `slow` 测试当作普通安全测试随意执行；运行这些测试需要维护者明确授权、隔离环境和合成数据。完整测试状态请以对应提交的 GitHub Actions 记录为准。
 
-## 🏗️ 技术架构 · Tech Stack
+<a id="tech-stack"></a>\n## 🏗️ 技术架构 · Tech Stack
 
 - **语言：** Python 3.12+
 - **优化：** Pyomo + HiGHS
@@ -147,7 +147,7 @@ python -m venv .venv
 - 尚未修复的安全漏洞请勿通过公开 Issue 或 Pull Request 披露。
 - 安全问题请阅读 [SECURITY.md](SECURITY.md)，并通过其中的私下联系渠道报告。
 
-## 🗺️ 项目状态与边界 · Status & Scope
+<a id="project-scope"></a>\n## 🗺️ 项目状态与边界 · Status & Scope
 
 GridWise Campus 仍处于开发中的 **Alpha 离线原型**。当前包版本为 `0.1.0`；`v0.3.x` 是内部开发阶段编号，不代表正式软件发行版本。
 
@@ -161,7 +161,7 @@ GridWise Campus 仍处于开发中的 **Alpha 离线原型**。当前包版本�
 
 未来是否支持这些方向，需要独立设计、授权和验证。不要将本项目的示例优化结果直接作为真实校园运行决策。
 
-## 🤝 参与贡献 · Contributing
+<a id="contributing"></a>\n## 🤝 参与贡献 · Contributing
 
 欢迎提交 Bug、功能建议和改进方案：
 
