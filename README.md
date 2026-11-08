@@ -5,7 +5,7 @@ Keep capability and release claims aligned with the code and verification eviden
 
 <div align="center">
 
-# ⚡ GridWise Campus
+<img src="assets/gridwise-campus-mark.svg" alt="GridWise Campus logo" width="112" />\n\n# ⚡ GridWise Campus
 
 ### 高校智慧能源管理系统 · Campus Energy Management System
 
@@ -24,7 +24,7 @@ Keep capability and release claims aligned with the code and verification eviden
 
 ---
 
-## 项目简介 · Overview
+<div align="center">\n\n<img src="assets/gridwise-campus-banner.svg" alt="GridWise Campus — offline campus energy analysis and optimization" width="100%" />\n\n</div>\n\n## 项目简介 · Overview
 
 **GridWise Campus** 是一个面向高校场景的离线能源分析与优化原型。它围绕校园负荷、光伏、电网购电与电池储能，提供多时段调度优化、数据质量检查、无储能基线对比、运行结果审计和本机可视化。
 
