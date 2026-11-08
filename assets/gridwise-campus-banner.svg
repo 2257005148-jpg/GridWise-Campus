@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 520" role="img" aria-labelledby="title desc">
+<title id="title">GridWise Campus — Campus Energy, Made Understandable</title>
+<desc id="desc">Decorative illustration of a modern campus, solar rooftops, battery storage, and connected energy flows. Concept art only.</desc>
+<defs>
+ <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#061525"/><stop offset=".55" stop-color="#0a2940"/><stop offset="1" stop-color="#071b2b"/></linearGradient>
+ <linearGradient id="glow" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#2dd4bf"/><stop offset="1" stop-color="#60a5fa"/></linearGradient>
+ <linearGradient id="glass" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#17435a"/><stop offset="1" stop-color="#0a2639"/></linearGradient>
+ <pattern id="grid" width="42" height="42" patternUnits="userSpaceOnUse"><path d="M42 0H0V42" fill="none" stroke="#4cc9c0" stroke-opacity=".09"/></pattern>
+ <filter id="blur"><feGaussianBlur stdDeviation="18"/></filter>
+</defs>
+<rect width="1600" height="520" rx="28" fill="url(#bg)"/><rect width="1600" height="520" rx="28" fill="url(#grid)"/>
+<circle cx="1260" cy="140" r="220" fill="#0e7490" opacity=".16" filter="url(#blur)"/>
+<path d="M0 420 Q260 360 500 414T980 390T1600 360V520H0Z" fill="#071d2c"/>
+<path d="M0 440 Q260 380 500 434T980 410T1600 380" fill="none" stroke="#2dd4bf" stroke-opacity=".45" stroke-width="2"/>
+<!-- campus buildings -->
+<g stroke="#3c8495" stroke-width="3">
+ <path d="M720 330V210l135-72 137 72v120Z" fill="url(#glass)"/>
+ <path d="M755 224h34v38h-34zm62-22h34v38h-34zm62 22h34v38h-34zm-124 65h34v38h-34zm62-21h34v38h-34zm62 21h34v38h-34z" fill="#5eead4" opacity=".65" stroke="none"/>
+ <path d="M1040 342V246l105-58 106 58v96Z" fill="url(#glass)"/>
+ <path d="M1070 259h28v34h-28zm52-24h28v34h-28zm52 24h28v34h-28zm-104 52h28v34h-28zm52-20h28v34h-28zm52 20h28v34h-28z" fill="#60a5fa" opacity=".6" stroke="none"/>
+ <path d="M1215 348V286l78-42 80 42v62Z" fill="#0d3045"/>
+ <path d="M1240 294h22v26h-22zm42-18h22v26h-22zm42 18h22v26h-22z" fill="#5eead4" opacity=".6" stroke="none"/>
+</g>
+<!-- solar panels -->
+<g transform="translate(744 176) skewY(-16)" stroke="#67e8f9" stroke-width="2">
+ <path d="M0 0h215l-12 38H-12Z" fill="#123d58"/><path d="M45 0 35 38M95 0 85 38M145 0 135 38M-3 19h211" fill="none" opacity=".65"/>
+</g>
+<!-- battery icon -->
+<g transform="translate(1390 250)">
+ <rect x="0" y="0" width="112" height="142" rx="16" fill="#0a2639" stroke="#2dd4bf" stroke-width="4"/>
+ <path d="M36 -10h40v10H36z" fill="#2dd4bf"/><path d="M60 26 39 75h24l-10 42 34-59H63l10-32Z" fill="#5eead4"/>
+ <text x="56" y="168" fill="#b8dce8" font-family="Arial,sans-serif" font-size="17" text-anchor="middle">STORAGE</text>
+</g>
+<!-- energy flow paths -->
+<g fill="none" stroke="url(#glow)" stroke-width="4" stroke-linecap="round">
+ <path d="M250 390 C420 300 560 300 720 330" stroke-dasharray="9 12"/>
+ <path d="M980 370 C1130 420 1260 418 1390 340" stroke-dasharray="9 12"/>
+ <path d="M1180 185 C1260 130 1320 130 1410 180" stroke-dasharray="8 12"/>
+</g>
+<g fill="#5eead4"><circle cx="250" cy="390" r="6"/><circle cx="720" cy="330" r="6"/><circle cx="980" cy="370" r="6"/><circle cx="1390" cy="340" r="6"/></g>
+<!-- title block -->
+<g transform="translate(86 104)">
+ <g transform="scale(.48)"><path d="M44 260h300M74 250V112l120-68 120 68v138" fill="none" stroke="url(#glow)" stroke-width="17" stroke-linejoin="round"/><path d="M194 45c-8-42 25-73 78-75-2 49-26 78-78 75z" fill="#34d399"/><path d="M194 45c-2-29-21-49-55-59 0 40 18 60 55 59z" fill="#5eead4"/><path d="M194 45v41" stroke="#5eead4" stroke-width="13"/><path d="M116 142h44v43h-44zm112 0h44v43h-44zM172 197h44v53h-44z" fill="#c9f7f2"/></g>
+ <text x="190" y="18" fill="#f1fbff" font-family="Arial,sans-serif" font-size="65" font-weight="700" letter-spacing="-2">GridWise <tspan fill="#2dd4bf">Campus</tspan></text>
+ <text x="194" y="74" fill="#c7e6ee" font-family="Arial,'Microsoft YaHei',sans-serif" font-size="31" font-weight="600">高校智慧能源管理系统</text>
+ <text x="194" y="112" fill="#7dd3d0" font-family="Arial,sans-serif" font-size="22" letter-spacing="1">CAMPUS ENERGY ANALYSIS &amp; OPTIMIZATION</text>
+ <path d="M194 145h470" stroke="#2dd4bf" stroke-width="3" opacity=".8"/>
+ <text x="194" y="194" fill="#e3f5fa" font-family="Arial,'Microsoft YaHei',sans-serif" font-size="27">离线分析 · 可解释调度 · 结果可复核</text>
+ <text x="194" y="231" fill="#9dc4d0" font-family="Arial,sans-serif" font-size="19">Offline-first  •  Explainable  •  Verifiable</text>
+</g>
+<text x="86" y="480" fill="#79a9b9" font-family="Arial,sans-serif" font-size="15" letter-spacing="2">GRIDWISE CAMPUS  /  OPEN-SOURCE PROJECT</text>
+</svg>
